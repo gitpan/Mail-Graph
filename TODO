@@ -1,0 +1,9 @@
+
+* make it possible to give a list of target addrss or domains that are
+  accepted, anything else is unknown
+* make it possible to set the colors of the graphs
+* consider drawing an y-axis at the right side, too, or at least gridlines
+* more tests
+* graphs with angled text at the bottom (like 45° since the email addresses or
+  filter rules are pretty long)
+* read in plain text files, not using zcat (for windows) 

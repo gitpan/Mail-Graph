@@ -1,0 +1,15 @@
+MANIFEST
+README
+LICENSE
+CHANGES
+TODO
+Makefile.PL
+lib/Mail/Graph.pm
+t/mailgraph.t
+samples/convert.pl
+samples/sample.pl
+samples/index.tpl
+samples/output/w3c.png
+samples/output/spam.css
+samples/archive/sample.txt.gz
+samples/archive/sample2.txt.gz
