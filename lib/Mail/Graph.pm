@@ -22,7 +22,7 @@ use Time::HiRes;
 
 use vars qw/$VERSION/;
 
-$VERSION = '0.12';
+$VERSION = '0.13';
 
 BEGIN
   {
@@ -92,7 +92,9 @@ sub _init
     die ("Unknown option '$k'") if !exists $def->{$k};
     }
 
-  $options->{output} .= '/' unless $options->{output} =~ /\/$/;
+  # try to create the output directory
+  mkdir $options->{output} unless -d $options->{output};
+  
   $options->{input} .= '/'
     if -d $options->{input} && $options->{input} !~ /\/$/;
   $self->{error} = undef;
@@ -123,11 +125,15 @@ sub _process_mail
     };
 
   # split "From blah@bar.baz Datestring"
-  # skip replies of the mailer-daemon to non-existant addresses
-  if ((!defined $mail->{header}->[0]) ||
-      ($mail->{header}->[0] =~ /MAILER-DAEMON/i))
+  if (!defined $mail->{header}->[0])
     {
-    $cur->{invalid} = 1;
+    $cur->{invalid} = 'no_mail_header';
+    return $cur;
+    }
+  # skip replies of the mailer-daemon to non-existant addresses
+  if ($mail->{header}->[0] =~ /MAILER-DAEMON/i)
+    {
+    $cur->{invalid} = 'from_mailer_daemon';
     return $cur;
     }
 
@@ -153,7 +159,7 @@ sub _process_mail
     }
   if (!defined $cur->{date})
     {
-    $cur->{invalid} = 2;
+    $cur->{invalid} = 'invalid_date';
     return $cur;
     }
 
@@ -165,25 +171,22 @@ sub _process_mail
 #    join ('|',$day,$month,$year,$dow,$hour,$minute,$seconds,$offset),"\n"
 #     if !defined $month || $month eq '';
 
-  if (!defined $cur->{month})
+  if ((!defined $cur->{month}) || ($cur->{month} == 0))
     {
     print $cur->{date},"\n";
-    }
-  if ($cur->{month} == 0)
-    {
-    $cur->{invalid} = 2;
+    $cur->{invalid} = 'invalid_month';
     return $cur;
     }
   if (! check_date($cur->{year},$cur->{month},$cur->{day}))
     {
-    $cur->{invalid} = 3;
+    $cur->{invalid} = 'invalid_date_check';
     return $cur;
     }
  
   # Mktime() doesn't like these (they are probably forged, anyway) 
   if ($cur->{year} < 1970 || $cur->{year} > 2038)
     {
-    $cur->{invalid} = 3;
+    $cur->{invalid} = 'before_1970_or_after_2038';
     return $cur;
     }
   
@@ -192,6 +195,7 @@ sub _process_mail
   foreach my $line (@{$mail->{header}})
     {
     chomp($line);
+    print " $line\n";
     if ($line =~ /^$filter_rule/i)
       { 
       my $rule = lc($line); $rule =~ s/^[A-Za-z0-9:\s-]+//;
@@ -204,9 +208,11 @@ sub _process_mail
       }
     else
       {
+      print "$line !~ /^X-Spam-Status:/i\n";
       next if $line !~ /^X-Spam-Status:/i;
       $line =~ /, hits=([0-9.]+)/;
       $cur->{score} = $1 || 0;
+      print "Got score $cur->{score}\n";
       }
     }
   
@@ -239,7 +245,7 @@ sub _write_index
   # gather count of skipped mails
   foreach my $mail (@{$self->{_index}})
     {
-    $invalid ++ if ($mail->{invalid} || 0) > 0;
+    $invalid ++ if exists $mail->{invalid};
     }
 
   # get the filename alone, without directory et all
@@ -264,7 +270,7 @@ sub _write_index
   foreach my $mail (@{$self->{_index}})
     {
     # don't include invalid mail
-    next if ($mail->{invalid} || 0) > 0;
+    next if exists $mail->{invalid};
     my $m = "";
     foreach my $key (qw/
        target size rule from score/)
@@ -420,11 +426,11 @@ sub _merge_mail
   # earlier is discarded as invalid.
   my ($self,$cur,$stats,$now,$first) = @_;  
 
-  $cur->{invalid} = $cur->{invalid} || 0;
+  $cur->{invalid} = $cur->{invalid} || '';
   
-  if ($cur->{invalid} != 0)
+  if ($cur->{invalid} ne '')
     {
-    $stats->{reasons}->{'invalid_' . $cur->{invalid}}++;
+    $stats->{reasons}->{$cur->{invalid}}++;
     $stats->{stats}->{items_skipped}++; return;
     }
 
@@ -566,9 +572,9 @@ sub generate
 
     # if index file exists, use it. Otherwise process archive and create index
     # at the same time
+    $self->_clear_index();				# empty internal index
     if ($file =~ /\.(idx|idx\.gz)$/)
       {
-      $self->_clear_index();				# empty it
       $self->_read_index($file,$stats);
       foreach my $cur (@{$self->{_index}})
         {
@@ -577,19 +583,12 @@ sub generate
       }
     else
       {
-      $self->_clear_index();				# empty it
+      # gather and merge mails into the current stats
       $self->_gather_mails($file,\$id,$stats,$now,$first);
-      #@mails = $self->_gather_mails($file,\$id,$stats);
-      #foreach my $mail (@mails)
-      #  {
-      #  my $cur = $self->_process_mail($mail,$now);
-      #  $self->_index_mail($cur); 
-      #  $self->_merge_mail($cur,$stats,$now,$first); 	# merge into $stats
-      #  }
       $self->_write_index($file,$stats);	# write index for that archive
-      $self->_clear_index();			# empty to save mem
       }
     }
+  $self->_clear_index();			# empty to save mem
 
   my $what = $self->{_options}->{items};
   my $h = $self->{_options}->{height};
@@ -921,7 +920,7 @@ sub _fill_template
 
   # write out
   $file =~ s/\.tpl/.html/;
-  $file = $self->{_options}->{output}.$file;
+  $file = File::Spec->catfile($self->{_options}->{output},$file);
   open FILE, ">$file" or die ("Cannot write $file: $!");
   print FILE $tpl;
   close FILE;
@@ -954,7 +953,6 @@ sub _year_month_day_to_num
   {
   my $m = shift;
 
-# print "$m ",join(' ',caller()),"\n";
   my ($day,$month,$year) = split /\//,$m;
   return Date_to_Days($year,$month,$day);
   }
@@ -1024,10 +1022,9 @@ sub _parse_date
     {
     # 18 Oct 2003 23:45:29 -0000
     $day = int($1 || 0);
-    $month = _month_to_num($2);
+    $month = _month_to_num($2 || 0);
     $year = int($3 || 0);
     $hour = $4 || 0; $minute = $5 || 0; $seconds = $6 || 0; $offset = $7 || 0;
-    # print "$year $month $day\n"; 
     $dow = Date::Calc::Day_of_Week($year,$month,$day);
     }
   else
@@ -1263,7 +1260,7 @@ sub _graph
   
     $my_graph->set( @opt ) or warn $my_graph->error();
 
-    print "Making $w x $h\n";
+    print " Making $w x $h\n";
     $my_graph->clear_errors();
     $my_graph->plot($data);
     $redo = 1;
@@ -1277,7 +1274,8 @@ sub _graph
       }
     if (!$my_graph->error())
       {
-      $self->_save_chart($my_graph, $self->{_options}->{output}.$stat);
+      $self->_save_chart($my_graph, 
+	File::Spec->catfile($self->{_options}->{output},$stat));
       print "Saved\n";
       last;
       }
@@ -1501,11 +1499,11 @@ sub _open_file
   {
   my ($file) = @_;
 
+  # try as .gz file first
   my $FILE;
-
-  if ($file =~ /\.gz$/)
+  if ($file =~ /\.(gz|zip|gzip)$/)
     {
-    $FILE = gzopen($file, "rb") or die "Cannot open $file: $gzerrno\n";
+    $FILE = gzopen($file, "r") or die "Cannot open $file: $gzerrno\n";
     }
   else
     {
@@ -1534,7 +1532,8 @@ sub _close_file
 
   if (ref($file) ne 'GLOB')
     {
-    die "Error reading from $file: $gzerrno\n" if $gzerrno != Z_STREAM_END;
+    die "Error reading from $file: ", $file->gzerror(),"\n"
+     if $file->gzerror != Z_STREAM_END;
     $file->gzclose();
     }
   else
@@ -1601,6 +1600,7 @@ sub _gather_mails
  
   my $cur_size = 0;
   my $line;
+  my $lines = 0;
   # endless loop  until done
   while ( 3 < 5 )
     {
@@ -1611,9 +1611,16 @@ sub _gather_mails
     else
       {
       $FILE->gzreadline($line);
-      $line = undef if $gzerrno != 0;
+      $line = undef if $gzerrno == Z_STREAM_END;
+      if ($FILE->gzerror())
+	{
+        $line = undef;
+        print "Compress:Zip error: ", $FILE->gzerror(), "\n"
+          if $FILE->gzerror() != Z_STREAM_END;
+        }
       }
     last if !defined $line;
+    $lines++;
 
     $cur_size += length($line);
 
@@ -1622,7 +1629,7 @@ sub _gather_mails
       $header = 1;
       if (@header_lines > 0)
         {
-	# had a last mail with header?
+	# had a mail before with header?
         my $cur = $self->_process_mail( 
 	  { header => [ @header_lines ],
 	   size => $cur_size,
@@ -1790,7 +1797,38 @@ Return an error message or undef for no error.
 
 =head1 BUGS
 
-See the file TODO.
+There are a couple of known bugs, some of the are unfinished features or
+problem of GD::Graph:
+
+=over 2
+
+=item Divide by Zero
+
+This is a bug in some versions of GD::Graph, when generating a graph with only
+one bar it will crash with this error. If you encounter this, please bug the
+author of GD::Graph and send me a copy.
+
+=item Argument "4, 0.7%" isn't numeric
+
+You might get a lot of warnings like
+
+	Argument "4, 0.7%" isn't numeric in numeric lt (<) at 
+	/usr/lib/perl5/site_perl/5.8.2/GD/Graph/Data.pm line 231.
+
+This is a problem with GD::Graph: Mail::Graph wants to use labels like 
+C<4, 0.7%> but GD::Graphs uses the same string for the label and the value
+of the point/bar. And thus Perl warns. This needs a small patch to GD::Graph
+that strips anything non-numeric out of the label before using it in numeric
+context. Please bug the author of GD::Graph and send me a copy.
+
+=item gzipped archives are not included in the stats
+
+Some of the gzipped archives seem to trigger some bug in Compress::Zlib,
+at least til version v1.32. For instance, on my system on of the sample
+archives in C</sample/archives/> is not read properly by Compress::Zlib. I
+already have notified the author of Compress::Zlib.
+
+=back
 
 =head1 LICENSE
 

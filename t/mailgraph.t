@@ -1,6 +1,6 @@
 #!/usr/bin/perl -w
 
-use Test;
+use Test::More;
 use strict;
 
 BEGIN
@@ -8,38 +8,40 @@ BEGIN
   $| = 1;
   unshift @INC, '../blib/lib';
   chdir 't' if -d 't';
-  plan tests => 102;
-  }
+  plan tests => 104;
 
-use Mail::Graph v0.11;
+  use_ok( 'Mail::Graph' );
+  }
 
 my $mg = Mail::Graph->new( input => '.', output => '.', );
 
-ok (ref($mg),'Mail::Graph');
-ok ($mg->error()||'','');
+is (ref($mg),'Mail::Graph', 'Could construct object');
+is ($mg->error()||'','','without error');
+
+can_ok ('Mail::Graph', qw/ error new generate/);
 
 # some internal tests
 my ($day,$month,$year,$dow,$hour,$minute,$second,$offset) = 
  Mail::Graph->_parse_date('');
-ok ($day,0); ok ($month,0); ok ($year,0); ok ($hour,0);
-ok ($minute,0); ok ($second,0); ok ($offset,0);
+is ($day,0); is ($month,0); is ($year,0); is ($hour,0);
+is ($minute,0); is ($second,0); is ($offset,0);
 
 ($day,$month,$year,$dow,$hour,$minute,$second,$offset) = 
  Mail::Graph->_parse_date('Tue Oct 27 18:38:52 1998');
-ok ($day,27); ok ($month,10); ok ($year,1998); ok ($hour,18);
-ok ($minute,38); ok ($second,52); ok ($offset,0); ok ($dow,2);
+is ($day,27); is ($month,10); is ($year,1998); is ($hour,18);
+is ($minute,38); is ($second,52); is ($offset,0); is ($dow,2);
 
 ($day,$month,$year,$dow,$hour,$minute,$second,$offset) = 
  Mail::Graph->_parse_date('Sun, 19 Jul 1998 23:49:16 +0200');
-ok ($day,19); ok ($month,7); ok ($year,1998); ok ($hour,23);
-ok ($minute,49); ok ($second,16); ok ($offset,'+0200'); ok ($dow,7);
+is ($day,19); is ($month,7); is ($year,1998); is ($hour,23);
+is ($minute,49); is ($second,16); is ($offset,'+0200'); is ($dow,7);
 
 ##############################################################################
 # test default options
 
 my $def = {
     input => 'archives',
-    output => 'spams/',
+    output => 'spams',
     items => 'spams',
     height => 200,
     template => 'index.tpl',
@@ -74,7 +76,7 @@ foreach (keys %$def)
   {
   if (! ref $def->{$_})
     {
-    print "# Tried $_\n" unless ok $mg->{_options}->{$_},$def->{$_};
+    print "# Tried $_\n" unless is($mg->{_options}->{$_},$def->{$_}, $_);
     }
   }
 
@@ -108,11 +110,11 @@ $def = {
 
 $mg = Mail::Graph->new( $def );
 
-foreach (keys %$def)
+foreach my $k (keys %$def)
   {
-  if (! ref $def->{$_})
+  if (! ref $def->{$k})
     {
-    ok $mg->{_options}->{$_},$def->{$_};
+    is ($mg->{_options}->{$k},$def->{$k}, $k);
     }
   }
 
@@ -170,9 +172,9 @@ my $res =
    }, $data, 
  );
 
-foreach (keys %$res)
+foreach my $k (keys %$res)
   {
-  ok ($res->{$_}->[1],$result->{$_});
+  is ($res->{$k}->[1],$result->{$k}, $k);
   }
 
 ###############################################################################
@@ -183,9 +185,9 @@ my $month_table = { jan => 1, feb => 2, mar => 3, apr => 4, may => 5, jun => 6,
 
 foreach my $m (keys %$month_table)
   {
-  ok (Mail::Graph::_month_to_num(lc($m)),$month_table->{$m});
-  ok (Mail::Graph::_month_to_num(uc($m)),$month_table->{$m});
-  ok (Mail::Graph::_month_to_num(ucfirst($m)),$month_table->{$m});
+  is (Mail::Graph::_month_to_num(lc($m)),$month_table->{$m});
+  is (Mail::Graph::_month_to_num(uc($m)),$month_table->{$m});
+  is (Mail::Graph::_month_to_num(ucfirst($m)),$month_table->{$m});
   }
   
 # _add_percentage
@@ -212,7 +214,7 @@ Mail::Graph->_add_percentage($stats, 'wahl');
 
 foreach my $key (keys %{$stats->{wahl}})
   {
-  ok ($stats->{wahl}->{$key}, 
-    "$percent->{$key}, $percent->{$key}%");
+  is ($stats->{wahl}->{$key}, 
+    "$percent->{$key}, $percent->{$key}%", $key);
   }
 

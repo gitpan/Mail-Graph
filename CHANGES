@@ -128,3 +128,14 @@
 	calculate size of mails correctly (forgot to take body into account)
 	don't write 'toplevel' to index, we can reconstruct it from 'target'
 	target address extraction works now
+2003-12-21 v0.13a Tels 110 tests (not released)
+  * samples/convert: Had a bug of "Return-path" vs. "Return-Path:"
+  * when extracting target, don't look into From:
+  * limit SA score to 200, not 100000
+2004-01-04 v0.13 Tels 112 tests
+  * create the output dir if it does not exist (Thanx Paul Wolters!)
+  * added BUGS section to doc
+  * converted makegraph.t to Test::More and added some tests
+  * output dir no longer gets a trailing slash (good for OS/2?) and we use
+    File::Spec to construct output file names
+  * better reasons for skipping mails (string vs. some number)

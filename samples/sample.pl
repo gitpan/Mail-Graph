@@ -1,9 +1,10 @@
 #!/usr/bin/perl -w
 
 use strict;
-use lib '../lib';
+use lib '../lib';	# use the local version for testing
 use Mail::Graph;
 
+# for demo purposes, delete all the index files. You should really keep them.
 `rm index/*`;
 
 my $mg = Mail::Graph->new( 
@@ -40,6 +41,6 @@ my $mg = Mail::Graph->new(
       },
   );
 die "Error: ",$mg->error(),"\n" if $mg->error();
-$mg->generate();
+$mg->generate();		# generate the graphs and the HTML output
 
 print "\nDone\n";

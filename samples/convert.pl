@@ -33,8 +33,12 @@ foreach $file (@files)
       }
     if ($line =~ /^Return-Path: /i)
       {
-      $from = $line; $from =~ s/^Return-Path: //; $from =~ s/\n//;
+      $from = $line; $from =~ s/^Return-Path: //i; $from =~ s/\n//;
       }
+    # using a regexp or something from CPAN would make more sense...
+    $from =~ s/"[^"]+"//;       # remove '"name" <email>'
+    $from =~ s/[<>]//;          # remove '"name" <email>'
+    $from =~ s/\s*//;           # remove spaces
     push @lines,$line;
     }
   close FILE;

@@ -2,26 +2,15 @@
 This lists any changes between the last version and the current, since the full
 change log got quite big:
 
-2003-11-02 v0.12 Tels
- tests: test target address extraction
-	add_percentage
-        110 tests
- fixed: much improved target address extraction
-        bug in _prediction() that used Today() instead of last_data
-	removed needless 'use Exporter;'
-        use File::Spec whenever possible
-	use Compress::Zlib for writing/reading gzip files instead of
-	 unportable zcat/gzip
-	some Date: fields contain strange formats and are now parsed better
-	uses much less memory (parse mail archive line by line instead of
-	 reading it into memory, then splitting it and then creating lot's
-	 of additional overhead)
- added: option 'valid_forwarders' to ease target extraction
-	option 'index' for directory where to create index (undef=disable)
-	option 'first_date' to skip mail with a date earlier than this
-	keep track of SpamAssassing scores and make a graph out of them
-	creation of gzipped index files
-        prediction for yearly stat based on last 60 days
-	re-read index files for much more speed
- 	can add percentage values in parens after value (for rule)
-	##took## in template by time taken to made the stats
+Fixed:
+  * samples/convert: Had a bug of "Return-path" vs. "Return-Path:"
+  * when extracting target, don't look into From:
+  * limit SA score to 200, not 100000
+  * output dir no longer gets a trailing slash (good for OS/2?) and we use
+    File::Spec to construct output file names
+Added:
+  * create the output dir if it does not exist (Thanx Paul Wolters!)
+  * added BUGS section to doc
+Tests:
+  * converted makegraph.t to Test::More and added some tests
+
