@@ -8,7 +8,7 @@ BEGIN
   $| = 1;
   unshift @INC, '../blib/lib';
   chdir 't' if -d 't';
-  plan tests => 38;
+  plan tests => 93;
   }
 
 use Mail::Graph;
@@ -33,6 +33,85 @@ ok ($minute,38); ok ($second,52); ok ($offset,0); ok ($dow,2);
  Mail::Graph->_parse_date('Sun, 19 Jul 1998 23:49:16 +0200');
 ok ($day,19); ok ($month,7); ok ($year,1998); ok ($hour,23);
 ok ($minute,49); ok ($second,16); ok ($offset,'+0200'); ok ($dow,7);
+
+##############################################################################
+# test default options
+
+my $def = {
+    input => 'archives',
+    output => 'spams/',
+    items => 'spams',
+    height => 200,
+    template => 'index.tpl',
+    no_title => 0,
+    filter_domains => [ ],
+    filter_target => [ ],
+    average => 7,
+    average_daily => 14,
+    last_date => undef,
+    generate => {
+      month => 1,
+      yearly => 1,
+      day => 1,
+      daily => 1,
+      dow => 1,
+      monthly => 1,
+      hour => 1,
+      toplevel => 1,
+      rule => 1,
+      target => 1,
+      domain => 1,
+      last_x_days => 30,
+      },
+   };
+
+$mg = Mail::Graph->new( );
+
+foreach (keys %$def)
+  {
+  if (! ref $def->{$_})
+    {
+    print "# Tried $_\n" unless ok $mg->{_options}->{$_},$def->{$_};
+    }
+  }
+
+$def = {
+    input => '.',
+    output => '.',
+    items => 'mails',
+    height => 202,
+    template => 'index1.tpl',
+    no_title => 1,
+    filter_domains => [ 'example.com' ],
+    filter_target => [ 'example@example.com', 'sample', ],
+    average => 17,
+    average_daily => 24,
+    last_date => '2002-08-2',
+    generate => {
+      month => 1,
+      yearly => 1,
+      day => 1,
+      daily => 1,
+      dow => 1,
+      monthly => 1,
+      hour => 1,
+      toplevel => 1,
+      rule => 1,
+      target => 1,
+      domain => 1,
+      last_x_days => 40,
+      },
+   };
+
+$mg = Mail::Graph->new( $def );
+
+foreach (keys %$def)
+  {
+  if (! ref $def->{$_})
+    {
+    ok $mg->{_options}->{$_},$def->{$_};
+    }
+  }
 
 ##############################################################################
 # tests for the _average function
@@ -91,5 +170,18 @@ my $res =
 foreach (keys %$res)
   {
   ok ($res->{$_}->[1],$result->{$_});
+  }
+
+###############################################################################
+# test conversation functions
+
+my $month_table = { jan => 1, feb => 2, mar => 3, apr => 4, may => 5, jun => 6,
+              jul => 7, aug => 8, sep => 9, oct => 10, nov => 11, dec => 12 };
+
+foreach my $m (keys %$month_table)
+  {
+  ok (Mail::Graph::_month_to_num(lc($m)),$month_table->{$m});
+  ok (Mail::Graph::_month_to_num(uc($m)),$month_table->{$m});
+  ok (Mail::Graph::_month_to_num(ucfirst($m)),$month_table->{$m});
   }
 

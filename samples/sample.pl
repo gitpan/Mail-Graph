@@ -12,6 +12,10 @@ my $mg = Mail::Graph->new(
 				# stats.html as output
   no_title => 1,		# should graphs have a title? 1 => no, 0 => yes
   average => 7,
+  average_daily => 14,		# if undef, set to 'average'
+# last_date => '2002-08-02',	# anything newer will be ignored, good for
+				# looking into the past
+  graph_ext => 'png',		# or 'gif' or 'jpg'
   generate => {
       month => 1,
       yearly => 0,
@@ -24,7 +28,7 @@ my $mg = Mail::Graph->new(
       rule => 1,
       target => 1,
       domain => 1,
-      last_x_days => 60,
+      last_x_days => 60,	# the graph should go back how many days?
       },
   );
 die "Error: ",$mg->error(),"\n" if $mg->error();

@@ -59,3 +59,22 @@
   - option 'average' (for average over Y days) works now
   - removed useless sorting of keys when doing average
   - fixed sample template, and sample script to show new options
+  - 38 tests
+2002-05-09 v0.09 Tels (never released)
+  - refined rule cleaner
+  - fixed: input can be a file, too
+  - color brown looked ugly, added some more colors to prevent wrap around
+2002-08-03 v0.10 Tels
+ tests: added some for default and overwritten options, and for month_to_num
+	93 tests
+ added: param last_date to make stats that end on a different day than today
+        param average_daily to have a different average there
+	param graph_ext to have specify png, jpg, gif etc
+ fixed: skip any mails newer than last_date (or today)
+        sample.pl to show new options
+        filter rules are now converted to lowercase
+	default params had "templates" instead of "template"
+	pod for new() and all it's parameters
+ misc:  slightly faster (17.9 vs 18.2 seconds on my system for my archives)		50% of the time is spent splitting the mail archive into lines and then
+	separating these into mails, and these in headers and bodies. There is
+	surely room for improvement...

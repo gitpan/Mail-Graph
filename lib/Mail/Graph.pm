@@ -21,7 +21,7 @@ use vars qw/@ISA $VERSION/;
 
 @ISA = qw/Exporter/;
 
-$VERSION = '0.08';
+$VERSION = '0.10';
 
 my ($month_table,$dow_table);
 
@@ -46,11 +46,14 @@ sub _init
     output => 'spams',
     items => 'spams',
     height => 200,
-    templates => 'index.tpl',
+    template => 'index.tpl',
     no_title => 0,
     filter_domains => [ ],
     filter_target => [ ],
     average => 7,
+    average_daily => 14,
+    graph_ext => 'png',
+    last_date => undef,
     generate => {
       month => 1,
       yearly => 1,
@@ -112,7 +115,12 @@ sub generate
   my @files = $self->_gather_files($self->{_options}->{input},$stats);
   my $id = 0; my @mails;
 
-  my $now = [ Today_and_Now() ];
+  my $now = [ Today_and_Now() ]; 	# [year,month,day,...]
+  if (defined $self->{_options}->{last_date})
+    {
+    ($now->[0],$now->[1],$now->[2]) = split /-/,$self->{_options}->{last_date};
+    }
+  print "Last date is $now->[0]",'-',$now->[1],'-',$now->[2],"\n";
   foreach my $file (sort @files)
     {
     print "At file $file\n";
@@ -160,6 +168,11 @@ sub generate
 
       $stats->{stats}->{items_skipped}++, next
        unless check_date($year,$month,$day);
+      
+      # mail is newer than last_date (or today)?
+      my $delta = Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]);
+      $stats->{stats}->{items_skipped}++, next
+       unless $delta >= 0;
 
       $stats->{stats}->{items_processed}++;
 
@@ -204,7 +217,6 @@ sub generate
 
       $stats->{stats}->{last_24_hours}++
        if ($D_y == 0 && $D_m == 0 && $D_d == 0 && $Dh < 24);
-      my $delta = Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]);
       $stats->{stats}->{last_7_days}++ if $delta <= 7;
       $stats->{stats}->{last_30_days}++ if $delta <= 30;
       
@@ -226,7 +238,8 @@ sub generate
       foreach my $line (@{$mail->{header}})
 	{
 	next if $line !~ /^X-Spamblock:/i; 
-	my $rule = $line; $rule =~ s/^X-Spamblock: //i;
+	my $rule = lc($line); $rule =~ s/^X-Spamblock: //i;
+	$rule =~ s/^(kill|bounce), //;
 	$rule =~ s/^caught //;
 	$rule =~ s/^by //;
 	$rule =~ s/^rule //;
@@ -380,10 +393,10 @@ sub generate
   # calculate how many entries we must skip to have a sensible amount of them
   my $skip = scalar keys %{$stats->{daily}};
   $skip = int($skip / 82); $skip = 1 if $skip < 1;
-  $stats->{daily} = $self->_average($stats->{daily});
+  $stats->{daily} = $self->_average($stats->{daily},
+    $self->{_options}->{average_daily});
 
-#  print Dumper($stats->{daily}),"\n"; exit;
-  $self->_graph ($stats,'daily', 800, $h + 50, {
+  $self->_graph ($stats,'daily', 900, $h + 50, {
     title => "$what/day",
     x_label => 'date',
     x_labels_vertical => 1,
@@ -401,11 +414,11 @@ sub generate
 
 sub _average
   {
-  my ($self,$stats) = @_;
+  my ($self,$stats,$average) = @_;
   # calculate a rolling average over the last x day
   my $avrg = {};
 
-  my $back = $self->{_options}->{average} || 7;
+  my $back = $average || $self->{_options}->{average} || 7;
   foreach my $thisday (keys %$stats)
     {
     my $sum = $stats->{$thisday};
@@ -570,6 +583,8 @@ sub _graph
   print "Making graph $stat...\n";
   my $max = 0;
   $map = sub { $_[0]; } if !defined $map;
+
+  # sort the data so that it can be processed by GD::Graph
   my @legend = (); my @data;
   my $k = []; my $v = [];
   if (defined $options->{cumulate})
@@ -592,8 +607,9 @@ sub _graph
     }
   elsif ($options->{type}||'' eq 'lines')
     {
+    my $av = 'average'; $av .= '_daily' if $stat eq 'daily';
     push @legend, $label,  
-     "average over last $self->{_options}->{average} days";
+     "average over last ".$self->{_options}->{$av}." days";
 
     foreach my $key (sort { 
       my $aa = &$map($a); my $bb = &$map($b);
@@ -632,6 +648,8 @@ sub _graph
       }
     push @data, $v;
     }
+  # end sort data
+  
   if ($predict)
     {
     my $t = 1;		# month
@@ -732,9 +750,8 @@ sub _graph
       else
         {
         $my_graph->set( dclrs =>
-          [ '#ff2060','#60ff80','#6080ff','#ffff00','#f060f0','#d0a040', ] );
-  #      [ '#f00020','#4000e0','#d00080','#a000c0','#b000b0','#a000c0', ] );
-  #      [ '#f0f090','#e0e080','#d0d070','#c0c060','#b0b050','#a0a040' ] );
+          [ '#ff2060','#60ff80','#6080ff','#ffff00','#f060f0', 
+ 	    '#209020','#d0d0f0','#f0a060','#ffd0d0','#b0ffb0' ] );
         }
       }
     $my_graph->set_legend(@legend) if @legend != 0;
@@ -816,10 +833,15 @@ sub _gather_files
   my $dir = shift;
   my $stats = shift;
 
+  if (-f $dir)
+    {
+    $stats->{stats}->{size_compressed} += -s $dir;
+    return ($dir);
+    }
+  
   opendir DIR, $dir or die "Cannot open dir $dir: $!";
   my @files = readdir DIR;
   closedir DIR;
-
   my @ret = ();
   foreach my $file (@files)
     {
@@ -830,10 +852,10 @@ sub _gather_files
   @ret;
   }
 
-sub _gather_mails
+sub _read_file
   {
-  my ($self,$file,$id,$stats) = @_;
-
+  my ($self,$file) = @_;
+  
   # that is a bit inefficient, sucking in anything at a time...
   my $doc;
   if ($file =~ /\.gz$/)
@@ -850,19 +872,39 @@ sub _gather_mails
       }
     close FILE;
     }
-  $stats->{stats}->{size_uncompressed} += length $doc;
+  \$doc;
+  }
+  
+sub _split
+  {
+  my $doc = shift;
 
-  if ($doc !~ /^From .*\d+/)
+  my $l = [ split(/\n/, $$doc) ];
+  $l; 
+  }
+
+sub _gather_mails
+  {
+  my ($self,$file,$id,$stats) = @_;
+
+  my $doc = $self->_read_file($file);
+    
+  $stats->{stats}->{size_uncompressed} += length $$doc;
+
+  if ($$doc !~ /^From .*\d+:/)
     {
     warn ("$file doesn't look like an mail archive, skipping");
     return ();
     }
-  my @lines = split /\n/,$doc;
+  my (@ret);
+
+  my @lines = @{ _split ($doc); };
+#  my @lines = split /\n/,$doc;
 
   my $header = 0; my @body_lines = (); my @header_lines = ();
-  my (@ret);
   foreach my $line (@lines)
     {
+    # if (($header == 0) && ($line =~ /^From .*\d+/))
     if ($line =~ /^From .*\d+/)
       {
       $header = 1;
@@ -870,7 +912,7 @@ sub _gather_mails
         {
         push @ret, {
            header => [ @header_lines ], 
-           body => [ @body_lines ], 
+#           body => [ @body_lines ], 
            id => $$id 
           }; 
         $$id ++;
@@ -878,18 +920,19 @@ sub _gather_mails
         @header_lines = ();
         }
       }
-    push @body_lines, $line if $header == 0;
-    $header = 0 if $header == 1 && $line =~ /^\n$/;
+#   push @body_lines, $line if $header == 0;
+    $header = 0 if $header == 1 && $line =~ /^\n$/;	# now in body?
     push @header_lines, $line if $header == 1;
     }
   if (@header_lines > 0)
     {
     push @ret, {
       header => [ @header_lines ], 
-      body => [ @body_lines ], 
+#     body => [ @body_lines ], 
       id => $$id 
      }; 
     }
+  $$id ++;
   @ret; 
   }
 
@@ -900,7 +943,7 @@ sub _save_chart
   my $name = shift or die "Need a name!";
   local(*OUT);
 
-  my $ext = $chart->export_format;
+  my $ext = $self->{_options}->{graph_ext} || $chart->export_format();
 
   open(OUT, ">$name.$ext") or
    die "Cannot open $name.$ext for write: $!";
@@ -980,26 +1023,31 @@ The following options exist:
 	output		Path where to write the output stats
 	items		Try 'spams' or 'mails' (can be any string)
 	generate	hash with names of stats to generate (1=on, 0=off):
-			 month	    per each month of the year
-			 day	    per each day of the month
-			 dow	    per each day of the week
-			 yearly	    per year
-			 daily	    per each day (with average)
-			 monthtly   per each month
-			 toplevel   per top_level domain
-			 rule	    per filter rule that matched
-			 target	    per target address
-			 domain	    per target domain
-			 las_x_days items for each of the last x days
-				    set it to the number of days you want
+			 month	     per each month of the year
+			 day	     per each day of the month
+			 hour	     per each hour of the day
+			 dow	     per each day of the week
+			 yearly	     per year
+			 daily	     per each day (with average)
+			 monthly     per each month
+			 toplevel    per top_level domain
+			 rule	     per filter rule that matched
+			 target	     per target address
+			 domain	     per target domain
+			 last_x_days items for each of the last x days
+				     set it to the number of days you want
 	average		set to 0 to disable, otherwise it gives the number
 			of days/weeks/month to average over
-	average_days	if not set, uses average, 0 to disable
-	average_months	if not set, uses average, 0 to disable
-	average_weeks	if not set, uses average, 0 to disable
+	average_daily	if not set, uses average, 0 to disable
+			number of days to average over in the daily graph
 	height		height of the generated images
 	template	name of the template file (ending in .tpl) that is
 			used to generate the html output, e.g. 'index.tpl'
+	no_title	set to 1 to disable graph titles, default 0
+	filter_domains	array ref with list of domains to show as "unknown"
+	filter_target	array ref with list of targets (regualr expressions)
+	graph_ext	extension of the generated graphs, default 'png'
+
 
 =head2 generate()
 
@@ -1020,7 +1068,7 @@ the same terms as Perl itself.
 
 =head1 AUTHOR
 
-(c) by Tels http://bloodgate.com/ 2002.
+(c) Copyright by Tels http://bloodgate.com/ 2002.
 
 =cut
 
