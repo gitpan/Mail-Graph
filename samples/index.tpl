@@ -2,6 +2,8 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<meta name="MSSmartTagsPreventParsing" content="TRUE">
+<meta http-equiv="imagetoolbar" content="no">
 <title>Example.com - spam statistics</title>
 <link rel="stylesheet" type="text/css" href="spam.css">
 </head>
@@ -28,6 +30,7 @@
   <li><a href="#rule">##items## per spam filter rule</a>
   <li><a href="#target">##items## per target address</a>
   <li><a href="#domain">##items## per target domain</a>
+  <li><a href="#histogram">SpamAssassin score histogram</a>
   </ul>
 </ul>
 
@@ -248,12 +251,24 @@ Per Target Domain
 <img src="domain.png" border=0 alt="##Items## per target domain">
 </p>
 
+<p></p>
+
+<p class="head">
+<a name="histogram">
+SpamAssassin Score Histogram
+</a>
+</p>
+
+<p class="stat">
+<img src="score_histogram.png" border=0 alt="SpamAssassin Score Histogram">
+</p>
+
 
 <table border=0 class="bottom" width="100%">
   <tr><td>
   Made with <a href="http://search.cpan.org/search?dist=Mail-Graph">Mail::Graph</a> v##version##
   <br>
-  Last regenerated: ##generated##
+  Last regenerated: ##generated##, took ##took## seconds
   <td align=right>
   <a href="http://validator.w3.org/check/referer"><img
      src="w3c.png" height="31" width="88"

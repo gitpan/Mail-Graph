@@ -1,0 +1,16 @@
+# http://module-build.sourceforge.net/META-spec.html
+#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
+name:         Mail-Graph
+version:      0.12
+version_from: lib/Mail/Graph.pm
+installdirs:  site
+requires:
+    Date::Calc:                    5
+    GD:                            1.38
+    GD::Graph:                     1.33
+    GD::Text:                      0.82
+    Math::BigInt:                  1.66
+    Time::HiRes:                   1.2
+
+distribution_type: module
+generated_by: ExtUtils::MakeMaker version 6.17

@@ -15,13 +15,19 @@ use Date::Calc
   qw/Delta_Days Date_to_Days Today_and_Now Today check_date
      Delta_YMDHMS Add_Delta_Days
     /;
-use Exporter;
+use Math::BigFloat lib => 'GMP';
+use File::Spec;
+use Compress::Zlib;		# for gzip file support
+use Time::HiRes;
 
-use vars qw/@ISA $VERSION/;
+use vars qw/$VERSION/;
 
-@ISA = qw/Exporter/;
+$VERSION = '0.12';
 
-$VERSION = '0.10';
+BEGIN
+  {
+  $| = 1;	# buffer off
+  }
 
 my ($month_table,$dow_table);
 
@@ -45,6 +51,7 @@ sub _init
     input => 'archives',
     output => 'spams',
     items => 'spams',
+    index => 'index/',
     height => 200,
     template => 'index.tpl',
     no_title => 0,
@@ -53,7 +60,9 @@ sub _init
     average => 7,
     average_daily => 14,
     graph_ext => 'png',
+    first_date => undef,
     last_date => undef,
+    valid_forwarders => undef,
     generate => {
       month => 1,
       yearly => 1,
@@ -67,6 +76,9 @@ sub _init
       target => 1,
       domain => 1,
       last_x_days => 30,
+      score_histogram => 5,
+      score_daily => 60,
+      score_scatter => 6,		# limit is 6
       },
     };
   
@@ -74,6 +86,12 @@ sub _init
     {
     $options->{$k} = $def->{$k} unless exists $options->{$k};
     }
+  # accept only valid options
+  foreach my $k (keys %$options)
+    {
+    die ("Unknown option '$k'") if !exists $def->{$k};
+    }
+
   $options->{output} .= '/' unless $options->{output} =~ /\/$/;
   $options->{input} .= '/'
     if -d $options->{input} && $options->{input} !~ /\/$/;
@@ -91,6 +109,418 @@ sub error
   return $self->{error};
   }
 
+sub _process_mail
+  {
+  # takes one mail text and processes it
+  # It will take it apart and store it in an index cache, which can be written
+  # out to an index file, which later can be reread
+  my ($self,$mail) = @_;
+
+  my $cur = {
+    target => 'unknown',
+    domain => 'unknown',
+    size => $mail->{size},
+    };
+
+  # split "From blah@bar.baz Datestring"
+  # skip replies of the mailer-daemon to non-existant addresses
+  if ((!defined $mail->{header}->[0]) ||
+      ($mail->{header}->[0] =~ /MAILER-DAEMON/i))
+    {
+    $cur->{invalid} = 1;
+    return $cur;
+    }
+
+  my ($a,$b,$c,$d);
+
+  if ($mail->{header}->[0] =~  
+  /^From [<]?(.+?\@)([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})[>]? (.*)/)
+    {
+    $cur->{from} = $1.$2;
+    $cur->{toplevel} = 'undef';
+    $cur->{date} = $3;
+    }
+  else
+    {
+    $mail->{header}->[0] =~ /^From [<]?(.+?\@)([a-zA-Z0-9\-\.]+?)(\.[a-zA-Z]{2,4})[>]? (.*)/;
+    $a = $1 || 'undef';
+    $b = $2 || 'undef';
+    $c = $3 || 'undef';
+    $d = $4 || 'undef';
+    $cur->{from} = $a.$b.$c;
+    $cur->{date} = $d;
+    $cur->{toplevel} = lc($c);
+    }
+  if (!defined $cur->{date})
+    {
+    $cur->{invalid} = 2;
+    return $cur;
+    }
+
+  ($cur->{day},$cur->{month},$cur->{year},
+    $cur->{dow},$cur->{hour},$cur->{minute},$cur->{second},$cur->{offset})
+   = $self->_parse_date($cur->{date});
+
+#    print "$date " ,
+#    join ('|',$day,$month,$year,$dow,$hour,$minute,$seconds,$offset),"\n"
+#     if !defined $month || $month eq '';
+
+  if (!defined $cur->{month})
+    {
+    print $cur->{date},"\n";
+    }
+  if ($cur->{month} == 0)
+    {
+    $cur->{invalid} = 2;
+    return $cur;
+    }
+  if (! check_date($cur->{year},$cur->{month},$cur->{day}))
+    {
+    $cur->{invalid} = 3;
+    return $cur;
+    }
+ 
+  # Mktime() doesn't like these (they are probably forged, anyway) 
+  if ($cur->{year} < 1970 || $cur->{year} > 2038)
+    {
+    $cur->{invalid} = 3;
+    return $cur;
+    }
+  
+  # extract the filter rule that matched and also the SpamAssassin score
+  my $filter_rule = $self->{_options}->{filter_rule} || 'X-Spamblock:';
+  foreach my $line (@{$mail->{header}})
+    {
+    chomp($line);
+    if ($line =~ /^$filter_rule/i)
+      { 
+      my $rule = lc($line); $rule =~ s/^[A-Za-z0-9:\s-]+//;
+      $rule =~ s/^(kill|bounce), //;
+      $rule =~ s/^, caught by //;
+      $rule =~ s/^by //;
+      $rule =~ s/^rule //;
+      $rule =~ s/^, //;
+      push @{$cur->{rule}}, $rule if $rule !~ /^\s*$/; 
+      }
+    else
+      {
+      next if $line !~ /^X-Spam-Status:/i;
+      $line =~ /, hits=([0-9.]+)/;
+      $cur->{score} = $1 || 0;
+      }
+    }
+  
+  ($cur->{target}, $cur->{domain}) =
+    $self->_extract_target($mail->{header});
+
+  $cur;
+  }
+      
+sub _clear_index
+  {
+  my $self = shift;
+
+  $self->{_index} = [];
+  }
+
+sub _index_mail
+  {
+  my ($self,$cur) = @_;
+
+  push @{$self->{_index}}, $cur;
+  }
+
+sub _write_index
+  {
+  # write the index file for archive $file
+  my ($self,$file,$stats) = @_;
+
+  my $invalid = 0;
+  # gather count of skipped mails
+  foreach my $mail (@{$self->{_index}})
+    {
+    $invalid ++ if ($mail->{invalid} || 0) > 0;
+    }
+
+  # get the filename alone, without directory et all
+  my ($volume,$directories,$filename) = File::Spec->splitpath( $file );
+  my $index_file = 
+   File::Spec->catfile($self->{_options}->{index},$filename.'.idx.gz');
+  
+  unlink $index_file;			# delete old version
+
+  my $gz = gzopen($index_file, "wb")
+   or die "Cannot open $index_file: $gzerrno\n" ;
+
+  $gz->gzwrite(
+    "# Mail::Graph mail index file\n"
+   ."# Automatically created on "
+   . scalar localtime() . " by Mail::Graph v$VERSION\n"
+   . "# To force re-indexing of $filename, delete this file.\n"
+   . "items_skipped=$invalid\n"
+   . "size_compressed=$stats->{stats}->{current_size_compressed}\n\n" );
+ 
+  my $doc = ""; 
+  foreach my $mail (@{$self->{_index}})
+    {
+    # don't include invalid mail
+    next if ($mail->{invalid} || 0) > 0;
+    my $m = "";
+    foreach my $key (qw/
+       target size rule from score/)
+      {
+      if (ref($mail->{$key}) eq 'ARRAY')
+        {
+        foreach (@{$mail->{$key}})
+	  {
+          $m .= "$key=$_\n" if ($_||'') ne '';
+          }
+        }        
+      else
+        {
+        # $mail->{$key} = '' unless defined $mail->{$key};
+        $m .= "$key=$mail->{$key}\n" if ($mail->{$key} || '') ne '';
+        }
+      }
+    if (($mail->{invalid} || 0) == 0)
+      {
+      eval {
+      $m .= "date=" . Date::Calc::Mktime( 
+	  $mail->{year},
+	  $mail->{month},
+	  $mail->{day},
+	  $mail->{hour},
+	  $mail->{minute},
+	  $mail->{second}) . "\n";
+        };
+      }
+#    else
+#      {
+#	print join(' ', $mail->{year}, 
+#	$mail->{month},
+#	$mail->{day},
+#	$mail->{hour},
+#	$mail->{minute},
+#	$mail->{second}) . "\n";
+#      require Data::Dumper; print Data::Dumper::Dumper($mail),"\n";
+#      }
+    if ($@ ne '')
+      {
+      require Data::Dumper; print Data::Dumper::Dumper($mail),"\n";
+      die ($@);
+      }
+    $doc .= "$m\n";
+    if (length($doc) > 8192)
+      {
+      $gz->gzwrite ( $doc ); $doc = "";
+      }
+    }
+  $gz->gzwrite ( $doc ) if $doc ne '';
+  $gz->gzclose();
+  $self;
+  }
+
+sub _read_index
+  {
+  # read index file $index (or for archive $file) and return list of indexed
+  # mails; also reads global counts and applies (adds) them to $stats
+  my ($self,$file,$stats) = @_;
+
+  $file .= '.idx' if $file !~ /\.idx(\.gz)?$/;
+
+  my $index_file = 
+   File::Spec->catfile($self->{_options}->{index},$file);
+  
+  $index_file .= '.gz' if -f "$index_file.gz";	# prefer compressed version
+
+  # might be a bit slow to read in everything at once, but better than reading
+  # the entire mail archive at once
+  my $index = $self->_read_file($file);
+  
+  my @lines = @{ _split ($index); };
+  
+  if ($lines[0] !~ /^# Mail::Graph mail index file/)
+    {
+    warn ("$index_file doesn't look like a mail index, skipping");
+    return ();
+    }
+
+  # read the "header" lines, e.g. the lines with global parameters
+  my $line_nr = 0;
+  foreach my $line (@lines)
+    {
+    $line_nr++;
+    chomp($line);
+    next if $line =~ /^#/;	# skip comments
+    last if $line =~ /^\s*$/;	# end at first empty line
+    if ($line !~ /^([A-Za-z0-9_-]+)=([0-9]+)\s*/)
+      {
+      warn ("malformed header line in index $index_file at line $line_nr");
+      return ();
+      }
+    my $name = $1;
+    my $value = $2;
+    $stats->{stats}->{$name} += $value;
+    }
+ 
+  splice @lines, 0, $line_nr;		# remove first N lines
+
+  my $cur = {}; 
+  foreach my $line (@lines)
+    {
+    $line_nr++;
+    chomp($line);
+    next if $line =~ /^#/;	# skip comments
+    if ($line =~ /^\s*$/)	# next mail at empty line
+      {
+      # disassemble the date field into the parts again
+      ($cur->{year},$cur->{month},$cur->{day},
+       $cur->{hour},$cur->{minute},$cur->{second},
+       $cur->{doy},$cur->{dow},$cur->{dst}) =
+	 Date::Calc::Localtime($cur->{date});
+      # extract the target domain from the target field
+      $cur->{domain} = $cur->{target};
+      $cur->{domain} =~ /\@((.+?)\.(.+))$/; $cur->{domain} = $1 || 'unknown';
+      # get the toplevel from target
+      $cur->{toplevel} = $cur->{target};
+      $cur->{toplevel} =~ /(\.[^.]+)$/; 
+      $cur->{toplevel} = $1 || 'unknown';
+
+      # remember this mail and move to the next one
+      push @{$self->{_index}}, $cur;
+      $cur = {};
+      next;
+      }
+    if ($line !~ /^([A-Za-z0-9_-]+)=(.*)\s*/)
+      {
+      warn ("malformed line in index $index_file at line $line_nr");
+      warn ("line '$line'");
+      return ();
+      }
+    my $name = $1; my $value = $2 || '';
+    if ($name eq 'rule')
+      {
+      # create array, but don't push empty values
+      $cur->{rule} = [] unless exists $cur->{rule};
+      push @{$cur->{rule}}, $value if $value ne '';
+      }
+    else
+      {
+      $cur->{$1} = $2 || '';
+      }
+    }
+ 
+  return $self;
+  }
+
+sub _merge_mail
+  {
+  # take on mail in HASH format (read from index or processed from mail text)
+  # and merge it in into $stats. $first is an optional first date, anything
+  # earlier is discarded as invalid.
+  my ($self,$cur,$stats,$now,$first) = @_;  
+
+  $cur->{invalid} = $cur->{invalid} || 0;
+  
+  if ($cur->{invalid} != 0)
+    {
+    $stats->{reasons}->{'invalid_' . $cur->{invalid}}++;
+    $stats->{stats}->{items_skipped}++; return;
+    }
+
+  # shortcut
+  my ($year,$month,$day) = ($cur->{year}, $cur->{month}, $cur->{day});
+  my ($hour,$minute,$second) = ($cur->{hour}, $cur->{minute}, $cur->{second});
+  my ($dow) = $cur->{dow};
+
+  if (!defined $year || !defined $month || !defined $day)
+    {
+    # huh?
+    $stats->{reasons}->{invalid_date}++;
+    $stats->{stats}->{items_skipped}++;
+    return;
+    }
+
+  # mail is earlier than first_date?
+  if (defined $first)
+    {
+    my $delta =
+     Delta_Days($first->[0],$first->[1],$first->[2],$year,$month,$day);
+    if ($delta < 0)
+      {
+      # too early
+      $stats->{reasons}->{too_early}++;
+      $stats->{stats}->{items_skipped}++;
+      return;
+      }
+    }
+
+  # mail is newer than last_date (or today)?
+  my $delta = Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]);
+  if ($delta < 0)
+    {
+    # mail newer
+    $stats->{stats}->{items_skipped}++;
+    $stats->{reasons}->{too_new}++;
+    return;
+    }
+
+  $stats->{stats}->{items_processed}++;
+
+  $stats->{target}->{$cur->{target}}++;
+  $stats->{domain}->{$cur->{domain}}++;
+      
+  # XXX TODO include check for valid target domain
+
+  my ($D_y,$D_m,$D_d, $Dh,$Dm,$Ds) =
+   Delta_YMDHMS($year,$month,$day,$hour,$minute,$second, @$now);
+
+  $stats->{stats}->{last_24_hours}++
+    if ($D_y == 0 && $D_m == 0 && $D_d == 0 && $Dh < 24);
+  $stats->{stats}->{last_7_days}++ if $delta <= 7;
+  $stats->{stats}->{last_30_days}++ if $delta <= 30;
+      
+  $stats->{month}->{$year}->[$month-1]++;
+  $stats->{hour}->{$year}->[$hour]++ if $hour >= 0 && $hour <= 23;
+  $stats->{dow}->{$year}->[$dow-1]++;
+  $stats->{day}->{$year}->[$day-1]++;
+  $stats->{yearly}->{$year}++;
+  $stats->{monthly}->{"$month/$year"}++;
+  $stats->{daily}->{"$day/$month/$year"}++;
+  my $l = $self->{_options}->{generate}->{last_x_days} || 0;
+  if ($l > 0 && $delta <= $l && $delta > 0)
+    {
+    $stats->{last_x_days}->{"$day/$month/$year"}++;
+    }
+   
+  foreach my $rule (@{$cur->{rule}})
+    { 
+    $stats->{rule}->{$rule}++;
+    }
+ 
+  # SpamAssassing or other score 
+  $cur->{score} = 0 if !defined $cur->{score};
+  # for scatter diagram (score_daily is just a limited scatter diagram)
+  $stats->{score_daily}->{"$day/$month/$year"}->{$cur->{score}}++;
+  # for histogram
+  my $s = $self->{_options}->{generate}->{score_histogram};
+  if ($s > 0)
+    {
+    $cur->{score} = $cur->{score} || 0; 
+    $cur->{score} = 10000 if $cur->{score} > 10000;	# hard limit
+    if ($cur->{score} > 0)				# uh?
+      {
+      my $s = int($cur->{score} / int($s)) * int($s);	# normalize to steps
+      $stats->{score_histogram}->{$s} ++;
+      $stats->{stats}->{max_score} = $s if $s > $stats->{stats}->{max_score};
+      }
+    }
+    
+  $stats->{stats}->{size_uncompressed} += $cur->{size};
+ 
+  $stats->{toplevel}->{$cur->{toplevel}}++;
+  }
+
 sub generate
   {
   my $self = shift;
@@ -98,177 +528,83 @@ sub generate
   return $self if defined $self->{error};
 
   # for stats:
-  my $stats = {};
+  my $stats = {  
+    reasons => {} , 				# reasons for invalid skips
+    start_time => Time::HiRes::time() };
   foreach my $k (
    qw/toplevel date month dow day yearly monthly daily rule target domain
-      hour/)
+      hour score_histogram score_daily score_scatter/)
     {
     $stats->{$k} = {};
     }
   foreach my $k (qw/
     items_proccessed items_skipped last_30_days last_7_days last_24_hours
-    size_compressed size_uncompressed
+    size_compressed size_uncompressed max_score
     /)
     {
     $stats->{stats}->{$k} = 0;
     }
-  my @files = $self->_gather_files($self->{_options}->{input},$stats);
+  my @files = $self->_gather_files($stats);
   my $id = 0; my @mails;
 
+  my $first;
   my $now = [ Today_and_Now() ]; 	# [year,month,day,...]
   if (defined $self->{_options}->{last_date})
     {
-    ($now->[0],$now->[1],$now->[2]) = split /-/,$self->{_options}->{last_date};
+    ($now->[0],$now->[1],$now->[2]) = split '-',$self->{_options}->{last_date};
     }
-  print "Last date is $now->[0]",'-',$now->[1],'-',$now->[2],"\n";
+  print "Last valid date is $now->[0]",'-',$now->[1],'-',$now->[2],"\n";
+  if (defined $self->{_options}->{first_date})
+    {
+    $first = [ split ('-',$self->{_options}->{first_date}) ];
+    print "First date is $first->[0]",'-',$first->[1],'-',$first->[2],"\n";
+    }
+
   foreach my $file (sort @files)
     {
     print "At file $file\n";
-    @mails = $self->_gather_mails($file,\$id,$stats);
-    foreach my $mail (@mails)
+
+    # if index file exists, use it. Otherwise process archive and create index
+    # at the same time
+    if ($file =~ /\.(idx|idx\.gz)$/)
       {
-      # split "From blah@bar.baz Datestring"
-      # skip replies of the mailer-daemon to non-existant addresses
-      $stats->{stats}->{items_skipped}++, next
-       if $mail->{header}->[0] =~ /MAILER-DAEMON/;
-      $stats->{stats}->{items_skipped}++, next
-       if !defined $mail->{header}->[0];
-
-      my ($a,$b,$c,$d,$email,$domain,$toplevel,$date);
-
-      if ($mail->{header}->[0] =~  
-  /^From [<]?(.+?\@)([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})[>]? (.*)/)
-	{
-	$email = $1.$2;
-	$domain = $2;
-	$toplevel = 'undef';
-	$date = $3 || 'undef';
-	}
-      else
-	{
-	$mail->{header}->[0] =~ /^From [<]?(.+?\@)([a-zA-Z0-9\-\.]+?)(\.[a-zA-Z]{2,4})[>]? (.*)/;
-	$a = $1 || 'undef';
-	$b = $2 || 'undef';
-	$c = $3 || 'undef';
-	$d = $4 || 'undef';
-	$email = $a.$b.$c;
-	$date = $d || 'undef';
-	$toplevel = lc($c);
-	$domain = $b.$c;
-#        warn "huh $mail->{header}->[0]\n" if $a eq 'undef';
-	}
-      $stats->{stats}->{items_skipped}++, next
-       if $date eq 'undef';
-      my ($day,$month,$year,$dow,$hour,$minute,$second,$offset)
-       = $self->_parse_date($date);
-
-#    print "$date " ,
-#    join ('|',$day,$month,$year,$dow,$hour,$minute,$seconds,$offset),"\n"
-#     if !defined $month || $month eq '';
-
-      $stats->{stats}->{items_skipped}++, next
-       unless check_date($year,$month,$day);
-      
-      # mail is newer than last_date (or today)?
-      my $delta = Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]);
-      $stats->{stats}->{items_skipped}++, next
-       unless $delta >= 0;
-
-      $stats->{stats}->{items_processed}++;
-
-      my $target = '';
-      # extract the target address
-      foreach my $line (@{$mail->{header}})
-	{
-	if (($line =~ /^X-Envelope-To:/i) && ($target eq ''))
-	  {
-	  $target = $line; $target =~ s/^[A-Za-z-]+: //;
-	  }
-#        if (($line =~ /^To:/i) && ($target eq ''))
-#	  {
-#          $target = $line; $target =~ s/^To: //i;
-#	  }
-	}
-      $target = lc($target);			# normalize
-      $target =~ s/^\".+?\"\s+//;		# throw away comment/name
-      $target =~ s/[<>]//g; 
-      $target = substr($target,0,64) if length($target) > 64;
-
-      foreach my $dom (@{$self->{_options}->{filter_domains}})
+      $self->_clear_index();				# empty it
+      $self->_read_index($file,$stats);
+      foreach my $cur (@{$self->{_index}})
         {
-        $target = 'unknown' if $target =~ /\@.*$dom/i;
+        $self->_merge_mail($cur,$stats,$now,$first); 	# merge into $stats
         }
-      foreach my $dom (@{$self->{_options}->{filter_target}})
-        {
-        $target = 'unknown' if $target =~ /$dom/i;
-        }
-
-      $domain = $target; $domain =~ /\@(.+)$/; $domain = $1 || 'unknown';
-      $domain = 'unknown' if $target eq '';
-      $target = 'unknown' if $target eq '';
-      $stats->{target}->{$target}++;
-      
-      $stats->{domain}->{$domain}++;
-      
-      # include check for valid target domain
-
-      my ($D_y,$D_m,$D_d, $Dh,$Dm,$Ds) =
-	Delta_YMDHMS($year,$month,$day, $hour,$minute,$second, @$now);
-
-      $stats->{stats}->{last_24_hours}++
-       if ($D_y == 0 && $D_m == 0 && $D_d == 0 && $Dh < 24);
-      $stats->{stats}->{last_7_days}++ if $delta <= 7;
-      $stats->{stats}->{last_30_days}++ if $delta <= 30;
-      
-      $year += 1900 if $year < 100;
-      $stats->{month}->{$year}->[$month-1]++;
-      $stats->{hour}->{$year}->[$hour]++ if $hour >= 0 && $hour <= 23;
-      $stats->{dow}->{$year}->[$dow-1]++;
-      $stats->{day}->{$year}->[$day-1]++;
-      $stats->{yearly}->{$year}++;
-      $stats->{monthly}->{"$month/$year"}++;
-      $stats->{daily}->{"$day/$month/$year"}++;
-      my $l = $self->{_options}->{generate}->{last_x_days} || 0;
-      if ($l > 0 && $delta <= $l && $delta > 0)
-        {
-        $stats->{last_x_days}->{"$day/$month/$year"}++;
-        }
-   
-      # extract the filter rule that matched
-      foreach my $line (@{$mail->{header}})
-	{
-	next if $line !~ /^X-Spamblock:/i; 
-	my $rule = lc($line); $rule =~ s/^X-Spamblock: //i;
-	$rule =~ s/^(kill|bounce), //;
-	$rule =~ s/^caught //;
-	$rule =~ s/^by //;
-	$rule =~ s/^rule //;
-	$stats->{rule}->{$rule}++;
-	}
- 
-#     if ($toplevel) !~ /^\.[a-z]+$/;
-#      $stats->{email}->{$email}++;
-      next if $toplevel eq 'undef';
-      $stats->{toplevel}->{$toplevel}++;
-#    print $mail->{header}->[0],"\n";
+      }
+    else
+      {
+      $self->_clear_index();				# empty it
+      $self->_gather_mails($file,\$id,$stats,$now,$first);
+      #@mails = $self->_gather_mails($file,\$id,$stats);
+      #foreach my $mail (@mails)
+      #  {
+      #  my $cur = $self->_process_mail($mail,$now);
+      #  $self->_index_mail($cur); 
+      #  $self->_merge_mail($cur,$stats,$now,$first); 	# merge into $stats
+      #  }
+      $self->_write_index($file,$stats);	# write index for that archive
+      $self->_clear_index();			# empty to save mem
       }
     }
-
-  #  use Data::Dumper;
-  #  print Dumper($stats->{domain});
 
   my $what = $self->{_options}->{items};
   my $h = $self->{_options}->{height};
 
   # adjust the width of the toplevel stat, so that it doesn't look to broad
-  my $w = (scalar keys %{$stats->{toplevel}}) * 30; $w = 900 if $w > 900;
+  my $w = (scalar keys %{$stats->{toplevel}}) * 30; $w = 1020 if $w > 1020;
   $self->_graph ($stats,'toplevel', $w, $h, {
     title => "$what/top-level domain",
     x_label => 'top-level domain',
     bar_spacing     => 3,
     show_values		=> 1,
     values_vertical	=> 1,
-    });
+    },
+    undef,0,$now,
+    );
 
   $self->_graph ($stats,'month', 400, $h, {
     title => "$what/month",
@@ -278,6 +614,7 @@ sub generate
     cumulate => 1, 
     },
     \&_num_to_month,
+    0,$now,
     );
 
   $self->_graph ($stats,'hour', 800, $h, {
@@ -287,6 +624,7 @@ sub generate
     bar_spacing     => 6,
     cumulate => 1, 
     },
+    undef,0,$now,
     );
 
   $self->_graph ($stats,'dow', 300, $h, {
@@ -297,6 +635,7 @@ sub generate
     cumulate => 1, 
     },
     \&_num_to_dow,
+    0,$now,
     );
 
   $self->_graph ($stats,'day', 800, $h, {
@@ -306,6 +645,7 @@ sub generate
     bar_spacing     => 4,
     cumulate => 1, 
     },
+    undef,0,$now,
     );
 
   # adjust the width of the yearly stat, so that it doesn't look to broad
@@ -318,11 +658,14 @@ sub generate
     show_values		=> 1,
     },
     undef,
-    1,							# do prediction
+    2,				# do linear plus last 60 days prediction
+    $now,
     );
 
   # adjust the width of the monthly stat, so that it doesn't look to broad
-  $w = (scalar keys %{$stats->{monthly}}) * 30; $w = 800 if $w > 800;
+  $w = (scalar keys %{$stats->{monthly}}) * 30;  
+  $w = 800 if $w > 800;
+  $w = 160 if $w < 160;	# min width due to long "prediction for this month" txt
   $self->_graph ($stats,'monthly', $w, $h, {
     title => "$what/month",
     x_label => 'month',
@@ -331,10 +674,13 @@ sub generate
     },
     \&_year_month_to_num,
     1,							# do prediction
+    $now,
     );
   
   # adjust the width of the rule stat, so that it doesn't look to broad
   $w = (scalar keys %{$stats->{rule}}) * 30; $w = 800 if $w > 800;
+  # go trough the rule data and create a percentage
+  $self->_add_percentage($stats,'rule');
   # need more height for long rule names
   $self->_graph ($stats,'rule', $w, $h + 200, {
     title => "$what/rule",
@@ -344,12 +690,15 @@ sub generate
     show_values		=> 1,
     values_vertical	=> 1,
     },
+    undef,
+    undef,0,$now,
     );
   
   # adjust the width of the target stat, so that it doesn't look to broad
   $w = (scalar keys %{$stats->{target}}) * 30; $w = 800 if $w > 800;
+  $self->_add_percentage($stats,'target');
   # need more height for long target names
-  $self->_graph ($stats, 'target', $w, $h + 300, {
+  $self->_graph ($stats, 'target', $w, $h + 320, {
     title => "$what/address",
     x_label => 'target address',
     x_labels_vertical => 1,
@@ -357,26 +706,30 @@ sub generate
     show_values		=> 1,
     values_vertical	=> 1,
     },
+    undef,0,$now,
     );
   
   # adjust the width of the domain stat, so that it doesn't look to broad
   $w = (scalar keys %{$stats->{domain}}) * 50; $w = 800 if $w > 800;
+  $self->_add_percentage($stats,'domain');
   # need more height for long domain names
-  $self->_graph ($stats, 'domain', $w, $h + 100, {
+  $self->_graph ($stats, 'domain', $w, $h + 120, {
     title => "$what/domain",
     x_label => 'target domain',
     x_labels_vertical => 1,
     bar_spacing     => 4,
     show_values		=> 1,
+    values_vertical	=> 1,
     long_ticks	=> 0,
     },
+    undef,0,$now,
     );
   
   my $l = $self->{_options}->{generate}->{last_x_days} || 0;
   if ($l > 0)
     {
     $stats->{last_x_days} = $self->_average($stats->{last_x_days});
-    # adjust the width of the domain stat, so that it doesn't look to broad
+    # adjust the width of the stat, so that it doesn't look to broad
     $w = $l * 50; $w = 800 if $w > 800;
     $self->_graph ($stats, ['last_x_days','daily'], $w, $h, {
       title => "$what/day",
@@ -387,6 +740,7 @@ sub generate
       type	=> 'lines',
      },
      \&_year_month_day_to_num,
+     0,$now,
       );
     }
  
@@ -404,13 +758,106 @@ sub generate
     type	=> 'lines',
     },
     \&_year_month_day_to_num,
+     0,$now,
     );
+  
+  $l = $self->{_options}->{generate}->{score_histogram} || 0;
+  if ($l > 0)
+    {
+    $w = ($stats->{stats}->{max_score} || 0) * 50;
+    if ($w > 0)
+      {
+      $w = 800 if $w > 800;
+      # for each undefined between first defined and last, set to 0
+      for (my $i = 0; $i < $stats->{stats}->{max_score}; $i += $l)
+        {
+        $stats->{score_histogram}->{$i} ||= 0;
+        }
+      }
+    }
+
+  $self->_graph ($stats,'score_histogram', $w, $h + 50, {
+    title => "SpamAssassin score histogram",
+    x_label => 'score',
+    x_labels_vertical => 0,
+    y_label	=> $self->{_options}->{items},
+    bar_spacing		=> 2,
+    },
+    undef, 0,$now,
+    );
+  
+  
+  # calculate how many entries we must skip to have a sensible amount of them
+  $skip = scalar keys %{$stats->{score_daily}};
+  $skip = int($skip / 82); $skip = 1 if $skip < 1;
+  $stats->{score_daily} = $self->_average($stats->{score_daily},
+    $self->{_options}->{average_score_daily});
+
+  $self->_graph ($stats,'score_daily', 900, $h + 50, {
+    title => "SpamAssassin score",
+    x_label => 'date',
+    x_labels_vertical => 1,
+    x_label_skip => $skip,
+    type	=> 'points',
+    },
+    \&_year_month_day_to_num,
+    );
+
+  $l = $self->{_options}->{generate}->{score_daily} || 0;
+  if ($l > 0)
+    {
+    $stats->{score_daily} = $self->_average($stats->{score_daily});
+    # adjust the width of the stat, so that it doesn't look to broad
+    $w = $l * 50; $w = 800 if $w > 800;
+    $self->_graph ($stats, ['last_x_days','daily'], $w, $h, {
+      title => "$what/day",
+      x_label => 'day',
+      x_labels_vertical => 1,
+      bar_spacing     => 4,
+      long_ticks	=> 0,
+      type	=> 'lines',
+     },
+     \&_year_month_day_to_num,
+     undef,0,$now,
+      );
+    }
+
+  require Data::Dumper; print Data::Dumper::Dumper($stats->{reasons});
+
+  # calculate how many entries we must skip to have a sensible amount of them
 
   $self->_fill_template($stats);
   }
 
 ###############################################################################
 # private methods
+  
+sub _add_percentage
+  {
+  # given the single numbers for a certain statistics, chnages the values
+  # from "xyz" to "xyz (u%)"
+  my ($self,$stats,$what) = @_;
+
+  my $sum = 0;
+  my $s = $stats->{$what};
+  # sum them all up
+  foreach my $k (keys %$s)
+    {
+    $sum += $s->{$k};
+    }
+  # calculate the percantage value
+  $sum = Math::BigInt->new($sum);
+  foreach my $k (keys %$s)
+    {
+    # 12 / 100 => 0.12 * 100 => 12%
+    # round to 1 digit after dot
+    my $p = 
+      Math::BigFloat->new($s->{$k} * 100)->bdiv($sum,undef,-1); 
+    $p->precision(undef);			# no pading with 0's
+    $s->{$k} = "$s->{$k}, $p%" if $p > 0;	# don't add "(0%)"
+    }
+  $self;
+  }
 
 sub _average
   {
@@ -452,12 +899,15 @@ sub _fill_template
   $tpl =~ s/##items##/lc($self->{_options}->{items})/eg;
   $tpl =~ s/##Items##/ucfirst($self->{_options}->{items})/eg;
   $tpl =~ s/##ITEMS##/uc($self->{_options}->{items})/eg;
+  my $time = sprintf("%0.2f",Time::HiRes::time() - $stats->{start_time});
+  $tpl =~ s/##took##/$time/g;
   
-  foreach (qw/
+  foreach my $t (qw/
      items_processed items_skipped last_7_days last_30_days last_24_hours
     /)
     {
-    $tpl =~ s/##$_##/$stats->{stats}->{$_}/g;
+    print "at $t\n";
+    $tpl =~ s/##$t##/$stats->{stats}->{$t}/g;
     }
   foreach (qw/
      size_compressed size_uncompressed
@@ -488,7 +938,7 @@ BEGIN
 
 sub _month_to_num
   {
-  my $m = lc(shift);
+  my $m = lc(shift || 0);
   return $month_table->{$m} || 0;
   }
 
@@ -539,39 +989,68 @@ sub _parse_date
   {
   my ($self,$date) = @_;
 
+  return (0,0,0,0,0,0,0,0) if !defined $date;
+
   my ($day,$month,$year,$dow,$hour,$minute,$seconds,$offset);
   if ($date =~ /,/)
     {
     # Sun, 19 Jul 1998 23:49:16 +0200
+    # Sun, 19 Jul 03 23:49:16 +0200
     $date =~ /([A-Za-z]+),\s+(\d+)\s([A-Za-z]+)\s(\d+)\s(\d+):(\d+):(\d+)\s(.*)/;
     $day = int($2 || 0);
-    $month = _month_to_num($3 || 0);
-    $year = int($4 || 0); $year += 1900 if $year < 100 && $year > 0;
+    $month = _month_to_num($3);
+    $year = int($4 || 0);
     $dow = _dow_to_num($1 || 0);
     $hour = $5 || 0;
     $minute = $6 || 0;
     $seconds = $7 || 0;
     $offset = $8 || 0;
-    # return ($day,$month,$4,$1,$5,$6,$7,$8);
     }
-  else
+  elsif ($date =~ /([A-Za-z]+)\s([A-Za-z]+)\s+(\d+)\s(\d+):(\d+):(\d+)\s(\d+)/)
     {
     # Tue Oct 27 18:38:52 1998
     $date =~ /([A-Za-z]+)\s([A-Za-z]+)\s+(\d+)\s(\d+):(\d+):(\d+)\s(\d+)/;
     $day = int($3 || 0);
-    $month = _month_to_num($2 || 0);
-    $year = int($7 || 0); $year += 1900 if $year < 100 && $year > 0;
+    $month = _month_to_num($2);
+    $year = int($7 || 0);
     $dow = _dow_to_num($1 || 0);
     $hour = $4 || 0; $minute = $5 || 0; $seconds = $6 || 0; $offset = 0;
-    # return ($3,$2,$7,$1,$4,$5,$6,0);
+    my $dow2 = Date::Calc::Day_of_Week($year,$month,$day);
+    # wrong Day Of Week? Shouldn't happen unless date is forged
+    return (0,0,0,0,0,0,0,0)
+      if ($dow2 ne $dow);
     }
+  elsif ($date =~ /(\d{2})\s([A-Za-z]+)\s(\d+)\s(\d+):(\d+):(\d+)\s([-+]?\d+)/)
+    {
+    # 18 Oct 2003 23:45:29 -0000
+    $day = int($1 || 0);
+    $month = _month_to_num($2);
+    $year = int($3 || 0);
+    $hour = $4 || 0; $minute = $5 || 0; $seconds = $6 || 0; $offset = $7 || 0;
+    # print "$year $month $day\n"; 
+    $dow = Date::Calc::Day_of_Week($year,$month,$day);
+    }
+  else
+    {
+    $month = 0;
+    $day = 0;
+    $year = 0;
+    $dow = 0;
+    $hour = 0;
+    $seconds = 0;
+    $minute = 0;
+    $offset = 0;
+    }
+  $year += 1900 if $year < 100 && $year >= 70;
+  $year += 2000 if $year < 70 && $year > 0;
   return ($day,$month,$year,$dow,$hour,$minute,$seconds,$offset);
   }
 
 sub _graph
   {
-  my ($self,$stats,$stat,$w,$h,$options,$map,$predict) = @_;
+  my ($self,$stats,$stat,$w,$h,$options,$map,$predict,$now) = @_;
 
+  $predict = $predict || 0;
   my $label = $stat; 
   if (ref($stat) eq 'ARRAY')
     {
@@ -654,10 +1133,27 @@ sub _graph
     {
     my $t = 1;		# month
     $t = 0 if $stat eq 'yearly';
-    unshift @data, $self->_prediction( $stats, $t, scalar @{$data[0]} );
+    unshift @data, $self->_prediction($stats, $t, scalar @{$data[0]}, $now);
     $t = $stat; $t =~ s/ly//;
     # legend only if we did prediction
-    push @legend, "prediction for this $t" if defined $data[0]->[-1];
+    if ($predict != 1)
+      {
+      # based on last 60 days
+      $predict = 1;				# 2 colors
+      # if under 80 days in the current year, don't make this (to have a
+      # difference between the two)
+      if (Delta_Days($now->[0],1,1, $now->[0], $now->[1], $now->[2]) > 80)
+        {
+        unshift @data, $self->_prediction($stats, 2, scalar @{$data[0]}, $now);
+        push @legend, "based on last 60 days" if defined $data[0]->[-1];
+        $predict = 2;				# 3 colors
+        }
+      push @legend, "linear prediction" if defined $data[0]->[-1];
+      }
+    else
+      {
+      push @legend, "prediction for this $t" if defined $data[0]->[-1];
+      }
     $options->{overwrite} = 1;
     }
   # calculate maximum value
@@ -666,10 +1162,11 @@ sub _graph
     {
     foreach my $r ( @data )
       {
-      my $i = 0;
+      my $i = 0; my $j;
       foreach my $h ( @$r )
         {
-        $sum[$i++] += $h || 0;
+        $j = $h || 0; $j =~ s/,.*//;			# "12, 12%" => 12
+        $sum[$i++] += $j || 0;
         }
       }
     }
@@ -677,10 +1174,11 @@ sub _graph
     {
     foreach my $r ( @data )
       {
-      my $i = 0;
+      my $i = 0; my $j;
       foreach my $h ( @$r )
         {
-        $sum[$i] = $h if ($h || 0) >= ($sum[$i] || 0); $i++;
+        $j = $h || 0; $j =~ s/,.*//;			# "12, 12%" => 12
+        $sum[$i] = $j if ($j || 0) >= ($sum[$i] || 0); $i++;
         }
       }
     }
@@ -691,11 +1189,14 @@ sub _graph
  
   my $data = GD::Graph::Data->new([$k, @data]) or die GD::Graph::Data->error;
 
+  # This is hackery, replace it with something more clean
   my $grow = 1.05;
   $grow = 1.15 if defined $options->{show_values};
   $grow = 1.25 if defined $options->{values_vertical};
   $grow = 1.15 if defined $options->{values_vertical} &&
    $options->{x_label} eq 'target address';
+  $grow = 1.6 if $stat =~ /^(rule)$/;		# percentages
+  $grow = 1.4 if $stat =~ /^(domain|target)$/;	# percentages
   if (int($max * $grow) == $max)	# increase by at least 1
     {
     $max++;
@@ -743,7 +1244,11 @@ sub _graph
     else
       {
       $my_graph = GD::Graph::bars->new( $w, $h );
-      if ($predict)
+      if ($predict == 2)
+        {
+        $my_graph->set( dclrs => [ '#f8e8e8', '#e0c8c8', '#ff2060' ] ); 
+        }
+      elsif ($predict)
         {
         $my_graph->set( dclrs => [ '#e0d0d0', '#ff2060' ] ); 
         }
@@ -788,10 +1293,9 @@ sub _prediction
   {
   # from item count per day calculate an average for the given timeframe,
   # then interpolate how many items will occur this month/year
-  my ($self, $stats, $m, $needed_samples ) = @_;
+  my ($self, $stats, $m, $needed_samples, $now ) = @_;
 
   my $max = undef;
-  my $now = [ Today() ];
   my ($month,$year) = ($now->[1],$now->[0]);
   my $day = 1; my $days;
   if ($m == 1)
@@ -801,12 +1305,19 @@ sub _prediction
     $days = 30 if $month != 2;
     $days = 31 if $now->[2] == 31;
     }
+  elsif ($m == 2)
+    {
+    # prediction for year based on last 60 days
+    ($year,$month,$day) = @$now;
+    ($year,$month,$day) = Add_Delta_Days($year,$month,$day, -60);
+    $days = 365;	# good enough?
+    }
   else
     {
     $month = 1;
     $days = 365;	# good enough?
     }
-  my $delta = Delta_Days($year,$month,$day, @$now);
+  my $delta = Delta_Days($year,$month,$day, $now->[0], $now->[1], $now->[2]);
   # sum up all items for each day since start of timeframe
   my $sum = 0;
   for (my $i = 0; $i < $delta; $i++)
@@ -827,54 +1338,250 @@ sub _prediction
   \@samples;
   }
 
+sub _extract_target
+  {
+  my ($self,$header) = @_;
+
+  my ($target,$domain) = '';
+
+  # ignore target in "From target@target-host.com datestring" and
+  # try to extract target from defined valid forwardes, since X-Envelope-To
+  # will probably point to the forwarded address endpoint
+ 
+  foreach my $line (@$header)
+    {
+    foreach my $for (@{$self->{_options}->{valid_forwarders}})
+      {
+      if (($line =~ /^Received:/) &&
+          ($line =~ /by [^\s]*?$for.*? for <([^>]+)>/))
+        {
+        $target = $1 || 'unknown'; last;
+        }
+      }
+    last if $target ne '';
+    }
+  $target ||= 'unknown';
+
+  if ($target eq 'unknown')
+    {
+    # try to extract the target address from X-Envelope-To;
+    foreach my $line (@$header)
+      {
+      if ($line =~ /^X-Envelope-To:/i)
+        {
+        $target = $line; $target =~ s/^[A-Za-z-]+: //; last;
+        }
+      }
+    }
+
+  # no X-Envelope-To:, no valid forwarder? So try "From "
+  if ($target eq 'unknown')
+    {
+    my $line = $header->[0] || '';
+    $line =~ /^From ([^\s]+)/;
+    $target = $1 || 'unknown';
+    }
+
+  # if still not defined, try 'received for' in Received: header lines
+  if ($target eq 'unknown')
+    {
+    foreach my $line (@$header)
+      {
+      if (($line =~ /^Received:/) &&
+          ($line =~ /received for <([^>]+)>:/))
+        {
+        $target = $1 || 'unknown'; last;
+        }
+      }
+    }
+
+  $target = lc($target);		# normalize
+  $target =~ s/^\".+?\"\s+//;		# throw away comment/name
+  $target =~ s/[<>]//g; 
+  $target = substr($target,0,64) if length($target) > 64;
+
+  foreach my $dom (@{$self->{_options}->{filter_domains}})
+    {
+    $target = 'unknown' if $target =~ /\@.*$dom/i;
+    }
+  foreach my $dom (@{$self->{_options}->{filter_target}})
+    {
+    $target = 'unknown' if $target =~ /$dom/i;
+    }
+
+  $domain = $target; $domain =~ /\@(.+)$/; $domain = $1 || 'unknown';
+
+  $target = 'unknown' if $target eq '';
+  $domain = 'unknown' if $target eq 'unknown';
+
+  ($target,$domain);
+  }
+
 sub _gather_files
   {
-  my $self = shift;
-  my $dir = shift;
-  my $stats = shift;
+  my ($self,$stats) = @_;
 
+  my $dir = $self->{_options}->{input};
+  # if input is a single file, use only this (does not look for an index yet)
   if (-f $dir)
     {
     $stats->{stats}->{size_compressed} += -s $dir;
     return ($dir);
     }
+
+  ############################################################################  
+  # open the input/archive directory
   
-  opendir DIR, $dir or die "Cannot open dir $dir: $!";
-  my @files = readdir DIR;
-  closedir DIR;
+  opendir my $DIR, $dir or die "Cannot open dir $dir: $!";
+  my @files = readdir $DIR;
+  closedir $DIR;
+
+  ############################################################################  
+  # open the index directory
+  my $index_dir = $self->{_options}->{index};
+  opendir $DIR, $index_dir or die "Cannot open dir $index_dir: $!";
+  my @index = readdir $DIR;
+  closedir $DIR;
+
+  # for each archive file, see if we have an index file. If yes, use that
+  # instead and also prefer gzipped (.idx.gz) index files over the normal 
+  # ones (.idx)
+
   my @ret = ();
   foreach my $file (@files)
     {
-    next unless -f "$dir/$file";		# only normal files
-    $stats->{stats}->{size_compressed} += -s "$dir/$file";
-    push @ret, $file;	
+    next if $file =~ /^\.\.?\z/;		# skip '..', '.' etc
+    print "Evaluating file '$file' ... ";
+    my $archive = File::Spec->catfile ($dir,$file);
+    my $index = File::Spec->catfile ($index_dir,$file.'idx');
+    my $index_gz = File::Spec->catfile ($index_dir,$file.'.idx.gz');
+
+    # compressed size is stored in index file
+    if (-f $index_gz)
+      {
+      print "found gzipped index.\n";
+      push @ret, $index_gz;
+      }
+    elsif (-f $index)
+      {
+      print "found index.\n";
+      push @ret, $index;
+      }
+    elsif (-f $archive)
+      {
+      print "found no index at all, will re-index.\n";
+      push @ret, $archive;
+      $stats->{stats}->{size_compressed} += -s $archive;
+      $stats->{stats}->{current_size_compressed} = -s $archive;
+      }
+    # everything else (directories etc) is ignored
     }
-  @ret;
+   
+  # also, for all (gzipped) index files without an archive file, add these
+  # too, so that you can safey remove the archives
+  foreach my $file (@index)
+    {
+    my $index = File::Spec->catfile ($index_dir,$file);
+  
+    my $archive = File::Spec->catfile ($dir,$file);
+    $archive =~ s/\.idx.gz$//;
+    $archive =~ s/\.idx$//;
+
+    if ((-f $index) && (!-f $archive))
+      {
+      print "Will also use index '$index' w/o archive.\n";
+      push @ret, $index;
+      }
+    }
+
+  return @ret;
   }
 
+sub _open_file
+  {
+  my ($file) = @_;
+
+  my $FILE;
+
+  if ($file =~ /\.gz$/)
+    {
+    $FILE = gzopen($file, "rb") or die "Cannot open $file: $gzerrno\n";
+    }
+  else
+    {
+    open ($FILE, $file) or die "Cannot open $file: $!\n";
+    }
+  $FILE;
+  }
+
+sub _read_line
+  {
+  my ($file) = @_;
+
+  if (ref($file) eq 'GLOB')
+    {
+    return <$file>;
+    }
+  my $line;
+  $file->gzreadline($line);
+  return if $gzerrno != 0;
+  $line;
+  }
+
+sub _close_file
+  {
+  my ($file) = shift;
+
+  if (ref($file) ne 'GLOB')
+    {
+    die "Error reading from $file: $gzerrno\n" if $gzerrno != Z_STREAM_END;
+    $file->gzclose();
+    }
+  else
+    {
+    close $file;
+    }
+  }
+ 
 sub _read_file
   {
+  # read file (but prefer the gzipped version) in one go and return a ref to
+  # the contents
+
   my ($self,$file) = @_;
   
   # that is a bit inefficient, sucking in anything at a time...
   my $doc;
   if ($file =~ /\.gz$/)
     {
-    $doc = `zcat $self->{_options}->{input}$file`;
+    return $self->_read_compressed_file($file);
     }
-  else
+
+  open FILE, "$file" or die ("Cannot read $file: $!");
+  while (<FILE>)
     {
-    open FILE, "$self->{_options}->{input}$file"
-     or die ("Cannot read $self->{_options}->{input}$file: $!");
-    while (<FILE>)
-      {
-      $doc .= $_;
-      }
-    close FILE;
+    $doc .= $_;
     }
+  close FILE;
   \$doc;
   }
-  
+
+sub _read_compressed_file
+  {
+  my ($self,$file) = @_;
+
+  my $gz = gzopen($file, "rb") or die "Cannot open $file: $gzerrno\n";
+
+  my ($line, $doc);
+  while ($gz->gzreadline($line) > 0)
+    {
+    $doc .= $line;
+    }
+  die "Error reading from $file: $gzerrno\n" if $gzerrno != Z_STREAM_END;
+  $gz->gzclose();
+  \$doc;
+  }
+ 
 sub _split
   {
   my $doc = shift;
@@ -885,55 +1592,67 @@ sub _split
 
 sub _gather_mails
   {
-  my ($self,$file,$id,$stats) = @_;
+  my ($self,$file,$id,$stats,$now,$first) = @_;
 
-  my $doc = $self->_read_file($file);
-    
-  $stats->{stats}->{size_uncompressed} += length $$doc;
+  my $FILE = _open_file($file);
 
-  if ($$doc !~ /^From .*\d+:/)
+  my $header = 0; 		# in header or body?
+  my @header_lines = ();	# current header
+ 
+  my $cur_size = 0;
+  my $line;
+  # endless loop  until done
+  while ( 3 < 5 )
     {
-    warn ("$file doesn't look like an mail archive, skipping");
-    return ();
-    }
-  my (@ret);
+    if (ref($FILE) eq 'GLOB')
+      {
+      $line = <$FILE>;
+      }
+    else
+      {
+      $FILE->gzreadline($line);
+      $line = undef if $gzerrno != 0;
+      }
+    last if !defined $line;
 
-  my @lines = @{ _split ($doc); };
-#  my @lines = split /\n/,$doc;
+    $cur_size += length($line);
 
-  my $header = 0; my @body_lines = (); my @header_lines = ();
-  foreach my $line (@lines)
-    {
-    # if (($header == 0) && ($line =~ /^From .*\d+/))
     if ($line =~ /^From .*\d+/)
       {
       $header = 1;
       if (@header_lines > 0)
         {
-        push @ret, {
-           header => [ @header_lines ], 
-#           body => [ @body_lines ], 
-           id => $$id 
-          }; 
+	# had a last mail with header?
+        my $cur = $self->_process_mail( 
+	  { header => [ @header_lines ],
+	   size => $cur_size,
+           id => $$id,
+	  }, $now); 
+        $self->_index_mail($cur);
+        $self->_merge_mail($cur,$stats,$now,$first);    # merge into $stats
         $$id ++;
-        @body_lines = ();
         @header_lines = ();
+        $cur_size = 0;
         }
       }
-#   push @body_lines, $line if $header == 0;
     $header = 0 if $header == 1 && $line =~ /^\n$/;	# now in body?
     push @header_lines, $line if $header == 1;
     }
+  # process last mail
   if (@header_lines > 0)
     {
-    push @ret, {
-      header => [ @header_lines ], 
-#     body => [ @body_lines ], 
-      id => $$id 
-     }; 
+    # was a valid mail? so get it's size (because we throw away the body)
+    my $cur = $self->_process_mail( 
+      { header => [ @header_lines ],
+      size => $cur_size,
+      id => $$id,
+       }, $now); 
+    $self->_index_mail($cur);
+    $self->_merge_mail($cur,$stats,$now,$first);    # merge into $stats
     }
   $$id ++;
-  @ret; 
+  _close_file($FILE);
+  return;
   }
 
 sub _save_chart
@@ -1018,36 +1737,48 @@ Create a new Mail::Graph object.
 
 The following options exist:
 
-	input		Path to an directory containing mbox files
-			Alternatively, name of an mbox file
-	output		Path where to write the output stats
+	input		Path to a directory containing (gzipped) mbox files
+			Alternatively, name of an (gzipped) mbox file
+	index		Directory where to write (and read) the index files
+	output		Directory where to write the output stats
 	items		Try 'spams' or 'mails' (can be any string)
 	generate	hash with names of stats to generate (1=on, 0=off):
-			 month	     per each month of the year
-			 day	     per each day of the month
-			 hour	     per each hour of the day
-			 dow	     per each day of the week
-			 yearly	     per year
-			 daily	     per each day (with average)
-			 monthly     per each month
-			 toplevel    per top_level domain
-			 rule	     per filter rule that matched
-			 target	     per target address
-			 domain	     per target domain
-			 last_x_days items for each of the last x days
-				     set it to the number of days you want
+			 month		 per each month of the year
+			 day		 per each day of the month
+			 hour		 per each hour of the day
+			 dow		 per each day of the week
+			 yearly		 per year
+			 daily		 per each day (with average)
+			 monthly	 per each month
+			 toplevel	 per top_level domain
+			 rule		 per filter rule that matched
+			 target		 per target address
+			 domain	         per target domain
+			 last_x_days     items for each of the last x days
+				         set it to the number of days you want
+			 score_histogram show histogram of SpamAssassin scores
+					 set it to the step-width (like 5)
+			 score_daily     SA score for each of the last x days
+				         set it to the number of days you want
+			 score_scatter   SA scatter score diagram, set it to
+					 the limit of the score (a line will be
+					 draw there)
 	average		set to 0 to disable, otherwise it gives the number
 			of days/weeks/month to average over
 	average_daily	if not set, uses average, 0 to disable
 			number of days to average over in the daily graph
-	height		height of the generated images
+	height		base height of the generated images
 	template	name of the template file (ending in .tpl) that is
 			used to generate the html output, e.g. 'index.tpl'
 	no_title	set to 1 to disable graph titles, default 0
 	filter_domains	array ref with list of domains to show as "unknown"
 	filter_target	array ref with list of targets (regualr expressions)
 	graph_ext	extension of the generated graphs, default 'png'
-
+	last_date	in yyyy-mm-dd format: specify the last used date, any
+			mail newer than that will be skipped. Defaults to today
+	first_date	in yyyy-mm-dd format: specify the first used date, any
+			mail older than that will be skipped. Defaults to undef
+			meaning any old mail will be considered.
 
 =head2 generate()
 
@@ -1059,7 +1790,7 @@ Return an error message or undef for no error.
 
 =head1 BUGS
 
-None known so far.
+See the file TODO.
 
 =head1 LICENSE
 

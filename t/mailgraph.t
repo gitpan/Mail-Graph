@@ -8,10 +8,10 @@ BEGIN
   $| = 1;
   unshift @INC, '../blib/lib';
   chdir 't' if -d 't';
-  plan tests => 93;
+  plan tests => 102;
   }
 
-use Mail::Graph;
+use Mail::Graph v0.11;
 
 my $mg = Mail::Graph->new( input => '.', output => '.', );
 
@@ -62,6 +62,9 @@ my $def = {
       target => 1,
       domain => 1,
       last_x_days => 30,
+      score_histogram => 5,
+      score_scatter => 5,
+      score_daily => 60,
       },
    };
 
@@ -183,5 +186,33 @@ foreach my $m (keys %$month_table)
   ok (Mail::Graph::_month_to_num(lc($m)),$month_table->{$m});
   ok (Mail::Graph::_month_to_num(uc($m)),$month_table->{$m});
   ok (Mail::Graph::_month_to_num(ucfirst($m)),$month_table->{$m});
+  }
+  
+# _add_percentage
+
+my $stats = { wahl => { 
+  'red' => 38.5,
+  'black' => 38.5,
+  'green' => 8.6,
+  'yellow' => 7.4,
+  'darkred' => 4,
+  'purple-green-dotted' => 3,
+  } };
+
+my $percent = {
+  'red' => 38.5,
+  'black' => 38.5,
+  'green' => 8.6,
+  'yellow' => 7.4,
+  'darkred' => 4,
+  'purple-green-dotted' => 3,
+  };
+
+Mail::Graph->_add_percentage($stats, 'wahl');
+
+foreach my $key (keys %{$stats->{wahl}})
+  {
+  ok ($stats->{wahl}->{$key}, 
+    "$percent->{$key}, $percent->{$key}%");
   }
 

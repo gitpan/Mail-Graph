@@ -1,0 +1,1 @@
+make dist should pick up this dir

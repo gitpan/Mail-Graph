@@ -78,3 +78,53 @@
  misc:  slightly faster (17.9 vs 18.2 seconds on my system for my archives)		50% of the time is spent splitting the mail archive into lines and then
 	separating these into mails, and these in headers and bodies. There is
 	surely room for improvement...
+2002-08-31 v0.11_1 Tels (not released)
+ tests: test target address extraction
+	99 tests
+ fixed: much improved target address extraction
+        bug in _prediction() that used Today() instead of last_data 
+ added: valid_forwarders to ease target extraction
+        prediction for yearly stat based on last 60 days
+2002-09-23 v0.11_2 Tels (not released)
+ tests: add_percantage
+	99 tests
+ added: can add percentage values in parens after value (for rule)
+ fixed: removed needless use Exporter;
+2002-11-14 v0.11_3 Tels (not released)
+ added: create index file for each archive and re-read it if available
+        (makes it MUCH faster on subsequent runs)
+        use File::Spec whenever possible
+2002-11-16 v0.11_4 Tels (not released)
+ added: re-read the index files
+        prefer gzipped index files
+ fixed: use Compress::Zlib for reading gzip files instead of unportable zcat
+	actually call the target extraction routine (but still does not work)
+2002-11-18 v0.11_5 Tels (not released)
+ fixed: use Compress::Zlib for writing gzipped index files
+	target extraction works now again (at least a bit 3/6 failed tests)
+	don't need to write out 'target_domain' to index, 'domain' suffices
+ added: replace ##took## in template by time taken (use Time::Hires)
+	percentages for target and domain
+2002-11-19 v0.11_6 Tels (not released)
+ fixed: some "unitialized warnings"
+        writing out skipped items and compressed size to fix these on read
+        (items_skipped vs. skipped_mails and archive_size_uncompressed vs.
+	 size_uncompressed)
+	don't write out "domain" to index, extract it on read from target
+	skip mails w/ dates w/ year < 1970 and > 2038 (make Mktime() happy)
+ added: keep track of scores (SpamAssassin) and make histogram
+        (still needs todo the scatter and daily_score graph, though)
+	die() if an unknown option is passed/found
+2003-10-24 v0.11_7 Tels (not released)
+ added: first_date - exclude any mail with a date earlier than this (as bogus)
+	support for the following date formats:
+        # Sun, 19 Jul 03 23:49:16 +0200
+        # 18 Oct 2003 23:45:29 -0000
+2003-11-02 v0.12 Tels 110 tests
+ fixed: uses much less memory when reading in a mail-archive (not index)
+	(mail was hold in memory twice, while creating a big structure
+	 containing the mail headers and id. Now it is processed line by line
+	 and the stats are calculated directly)
+	calculate size of mails correctly (forgot to take body into account)
+	don't write 'toplevel' to index, we can reconstruct it from 'target'
+	target address extraction works now
