@@ -16,9 +16,11 @@
 <li><a href="#stats">Statistics</a>
 <li><a href="#graphs">Graphs</a>:
   <ul>
-  <li><a href="#monthly">##items## daily</a>
+  <li><a href="#last_x_days">The last 60 days</a>
+  <li><a href="#daily">##items## daily</a>
   <li><a href="#monthly">##items## monthly</a>
   <li><a href="#yearly">##items## yearly</a>
+  <li><a href="#hour">##items## per hour of the day</a>
   <li><a href="#dow">##items## per day of the week</a>
   <li><a href="#day">##items## per day of the month</a>
   <li><a href="#month">##items## per month</a>
@@ -44,9 +46,21 @@ This page is an attempt to visualize the spam amounts I get.
 <table border=0 cellpadding=2 cellspacing=0>
 
 <tr><td class="left">
-##Items## processed:
+##Items## in archive:
 </td><td class="right">
 ##items_processed##
+</td></tr>
+
+<tr><td class="left">
+Archive size (compressed):
+</td><td class="right">
+##size_compressed##
+</td></tr>
+
+<tr><td class="left">
+Archive size (uncompressed):
+</td><td class="right">
+##size_uncompressed##
 </td></tr>
 
 <tr><td class="left">
@@ -93,6 +107,18 @@ double-bounces occur frequently.
 </a>
 
 <p class="head">
+<a name="last_x_days">
+The last 60 days
+</a>
+</p>
+
+<p class="stat">
+<img src="last_x_days.png" border=0 alt="The last 60 days">
+</p>
+
+<p></p>
+
+<p class="head">
 <a name="daily">
 Daily
 </a>
@@ -124,6 +150,18 @@ Yearly
 
 <p class="stat">
 <img src="yearly.png" border=0 alt="##Items## per Year">
+</p>
+
+<p></p>
+
+<p class="head">
+<a name="hour">
+Per Hour of the Day
+</a>
+</p>
+
+<p class="stat">
+<img src="hour.png" border=0 alt="##Items## per Hour of the Day">
 </p>
 
 <p></p>

@@ -21,7 +21,7 @@ use vars qw/@ISA $VERSION/;
 
 @ISA = qw/Exporter/;
 
-$VERSION = '0.06';
+$VERSION = '0.08';
 
 my ($month_table,$dow_table);
 
@@ -50,6 +50,7 @@ sub _init
     no_title => 0,
     filter_domains => [ ],
     filter_target => [ ],
+    average => 7,
     generate => {
       month => 1,
       yearly => 1,
@@ -62,6 +63,7 @@ sub _init
       rule => 1,
       target => 1,
       domain => 1,
+      last_x_days => 30,
       },
     };
   
@@ -92,9 +94,6 @@ sub generate
 
   return $self if defined $self->{error};
 
-  my @files = $self->_gather_files($self->{_options}->{input});
-  my $id = 0; my @mails;
-
   # for stats:
   my $stats = {};
   foreach my $k (
@@ -105,15 +104,19 @@ sub generate
     }
   foreach my $k (qw/
     items_proccessed items_skipped last_30_days last_7_days last_24_hours
+    size_compressed size_uncompressed
     /)
     {
     $stats->{stats}->{$k} = 0;
     }
+  my @files = $self->_gather_files($self->{_options}->{input},$stats);
+  my $id = 0; my @mails;
+
   my $now = [ Today_and_Now() ];
   foreach my $file (sort @files)
     {
     print "At file $file\n";
-    @mails = $self->_gather_mails($file,\$id);
+    @mails = $self->_gather_mails($file,\$id,$stats);
     foreach my $mail (@mails)
       {
       # split "From blah@bar.baz Datestring"
@@ -201,11 +204,10 @@ sub generate
 
       $stats->{stats}->{last_24_hours}++
        if ($D_y == 0 && $D_m == 0 && $D_d == 0 && $Dh < 24);
-      $stats->{stats}->{last_7_days}++
-       if Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]) <= 7;
-      $stats->{stats}->{last_30_days}++
-       if Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]) <= 30;
-
+      my $delta = Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]);
+      $stats->{stats}->{last_7_days}++ if $delta <= 7;
+      $stats->{stats}->{last_30_days}++ if $delta <= 30;
+      
       $year += 1900 if $year < 100;
       $stats->{month}->{$year}->[$month-1]++;
       $stats->{hour}->{$year}->[$hour]++ if $hour >= 0 && $hour <= 23;
@@ -214,6 +216,11 @@ sub generate
       $stats->{yearly}->{$year}++;
       $stats->{monthly}->{"$month/$year"}++;
       $stats->{daily}->{"$day/$month/$year"}++;
+      my $l = $self->{_options}->{generate}->{last_x_days} || 0;
+      if ($l > 0 && $delta <= $l && $delta > 0)
+        {
+        $stats->{last_x_days}->{"$day/$month/$year"}++;
+        }
    
       # extract the filter rule that matched
       foreach my $line (@{$mail->{header}})
@@ -352,25 +359,29 @@ sub generate
     },
     );
   
+  my $l = $self->{_options}->{generate}->{last_x_days} || 0;
+  if ($l > 0)
+    {
+    $stats->{last_x_days} = $self->_average($stats->{last_x_days});
+    # adjust the width of the domain stat, so that it doesn't look to broad
+    $w = $l * 50; $w = 800 if $w > 800;
+    $self->_graph ($stats, ['last_x_days','daily'], $w, $h, {
+      title => "$what/day",
+      x_label => 'day',
+      x_labels_vertical => 1,
+      bar_spacing     => 4,
+      long_ticks	=> 0,
+      type	=> 'lines',
+     },
+     \&_year_month_day_to_num,
+      );
+    }
+ 
   # calculate how many entries we must skip to have a sensible amount of them
   my $skip = scalar keys %{$stats->{daily}};
   $skip = int($skip / 82); $skip = 1 if $skip < 1;
-  # calculate a rolling average over the last 7 day
-  my $avrg = {};
-  foreach my $thisday (sort keys %{$stats->{daily}})
-    {
-    my $sum = $stats->{daily}->{$thisday};
-    my ($day,$month,$year) = split /\//,$thisday;
-    my ($d,$m,$y);
-    for (my $i = 1; $i < 7; $i++)
-      {
-      ($y,$m,$d) = Add_Delta_Days($year,$month,$day,-$i);
-      my $this = "$d/$m/$y";
-      $sum += $stats->{daily}->{$this}||0;		# non-existant => 0
-      }
-    $avrg->{$thisday} = [ $stats->{daily}->{$thisday}, int($sum / 7) ];
-    }
-  $stats->{daily} = $avrg;
+  $stats->{daily} = $self->_average($stats->{daily});
+
 #  print Dumper($stats->{daily}),"\n"; exit;
   $self->_graph ($stats,'daily', 800, $h + 50, {
     title => "$what/day",
@@ -381,11 +392,35 @@ sub generate
     },
     \&_year_month_day_to_num,
     );
+
   $self->_fill_template($stats);
   }
 
 ###############################################################################
 # private methods
+
+sub _average
+  {
+  my ($self,$stats) = @_;
+  # calculate a rolling average over the last x day
+  my $avrg = {};
+
+  my $back = $self->{_options}->{average} || 7;
+  foreach my $thisday (keys %$stats)
+    {
+    my $sum = $stats->{$thisday};
+    my ($day,$month,$year) = split /\//,$thisday;
+    my ($d,$m,$y);
+    for (my $i = 1; $i < $back; $i++)
+      {
+      ($y,$m,$d) = Add_Delta_Days($year,$month,$day,-$i);
+      my $this = "$d/$m/$y";
+      $sum += $stats->{$this}||0;		# non-existant => 0
+      }
+    $avrg->{$thisday} = [ $stats->{$thisday}, int($sum / $back) ];
+    }
+  return $avrg;
+  }
 
 sub _fill_template
   {
@@ -409,6 +444,15 @@ sub _fill_template
      items_processed items_skipped last_7_days last_30_days last_24_hours
     /)
     {
+    $tpl =~ s/##$_##/$stats->{stats}->{$_}/g;
+    }
+  foreach (qw/
+     size_compressed size_uncompressed
+    /)
+    {
+    # in MByte
+    $stats->{stats}->{$_} = 
+    int(($stats->{stats}->{$_} * 10) / (1024*1024)) / 10;
     $tpl =~ s/##$_##/$stats->{stats}->{$_}/g;
     }
 
@@ -515,7 +559,13 @@ sub _graph
   {
   my ($self,$stats,$stat,$w,$h,$options,$map,$predict) = @_;
 
-  return if $self->{_options}->{generate}->{$stat} == 0;	# skip this
+  my $label = $stat; 
+  if (ref($stat) eq 'ARRAY')
+    {
+    $label = $stat->[1];
+    $stat = $stat->[0];
+    }
+  return if ($self->{_options}->{generate}->{$stat}||0) == 0;	# skip this
 
   print "Making graph $stat...\n";
   my $max = 0;
@@ -542,7 +592,8 @@ sub _graph
     }
   elsif ($options->{type}||'' eq 'lines')
     {
-    push @legend, $stat, 'average over last 7 days';
+    push @legend, $label,  
+     "average over last $self->{_options}->{average} days";
 
     foreach my $key (sort { 
       my $aa = &$map($a); my $bb = &$map($b);
@@ -708,6 +759,10 @@ sub _graph
       print "Saved\n";
       last;
       }
+    elsif ($redo != 0)
+      {
+      print $my_graph->error(),"\n";
+      }
     }
   return $self;
   }
@@ -735,20 +790,16 @@ sub _prediction
     $days = 365;	# good enough?
     }
   my $delta = Delta_Days($year,$month,$day, @$now);
-  print "need $needed_samples $year-$month-$day delta $delta\n";
   # sum up all items for each day since start of timeframe
   my $sum = 0;
   for (my $i = 0; $i < $delta; $i++)
     {
     $sum += $stats->{daily}->{"$day/$month/$year"} || 0;
-    print "$year-$month-$day $sum\n";
     ($year,$month,$day) = Add_Delta_Days($year,$month,$day, 1);
     }
   if ($delta != 0)
     {
-    print "predict $sum / $delta => ",$sum/$delta," per day = "; 
     $max = int($days * $sum / $delta);
-    print "$max\n";
     }
   my @samples;
   for (my $i = 1; $i < $needed_samples; $i++)
@@ -763,6 +814,7 @@ sub _gather_files
   {
   my $self = shift;
   my $dir = shift;
+  my $stats = shift;
 
   opendir DIR, $dir or die "Cannot open dir $dir: $!";
   my @files = readdir DIR;
@@ -772,6 +824,7 @@ sub _gather_files
   foreach my $file (@files)
     {
     next unless -f "$dir/$file";		# only normal files
+    $stats->{stats}->{size_compressed} += -s "$dir/$file";
     push @ret, $file;	
     }
   @ret;
@@ -779,7 +832,7 @@ sub _gather_files
 
 sub _gather_mails
   {
-  my ($self,$file,$id) = @_;
+  my ($self,$file,$id,$stats) = @_;
 
   # that is a bit inefficient, sucking in anything at a time...
   my $doc;
@@ -797,6 +850,7 @@ sub _gather_mails
       }
     close FILE;
     }
+  $stats->{stats}->{size_uncompressed} += length $doc;
 
   if ($doc !~ /^From .*\d+/)
     {
@@ -926,16 +980,18 @@ The following options exist:
 	output		Path where to write the output stats
 	items		Try 'spams' or 'mails' (can be any string)
 	generate	hash with names of stats to generate (1=on, 0=off):
-			 month	   per each month of the year
-			 day	   per each day of the month
-			 dow	   per each day of the week
-			 yearly	   per year
-			 daily	   per each day (with average)
-			 monthtly  per each month
-			 toplevel  per top_level domain
-			 rule	   per filter rule that matched
-			 target	   per target address
-			 domain	   per target domain
+			 month	    per each month of the year
+			 day	    per each day of the month
+			 dow	    per each day of the week
+			 yearly	    per year
+			 daily	    per each day (with average)
+			 monthtly   per each month
+			 toplevel   per top_level domain
+			 rule	    per filter rule that matched
+			 target	    per target address
+			 domain	    per target domain
+			 las_x_days items for each of the last x days
+				    set it to the number of days you want
 	average		set to 0 to disable, otherwise it gives the number
 			of days/weeks/month to average over
 	average_days	if not set, uses average, 0 to disable
@@ -947,7 +1003,7 @@ The following options exist:
 
 =head2 generate()
 
-Generate the stats.
+Generate the stats, fill in the template and write it out. Takes no options.
 
 =head2 error()
 

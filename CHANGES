@@ -1,5 +1,5 @@
 
-2002-03-29 0.01 Tels first version
+2002-03-29 v0.01 Tels first version
   - derived from stand-alone script
   - graphs: per day
 	    per month of year
@@ -13,7 +13,7 @@
   - added two basic tests
   - read in template, and write out as html
   - refined template and made it using a stylesheet
-2002-03-31 0.02 Tels
+2002-03-31 v0.02 Tels
   - use Date::Calc for Date_to_Days and some others
   - tests for _parse_date
   - _parse_date(): return 0 for undefined or invalid dates, return numerical
@@ -24,17 +24,17 @@
   - renamed graphs: per_month => monthly, year => yearly
   - added the ability to supress generation of each graph
   - refined sample template
-2002-04-07 0.03 Tels (first released version)
+2002-04-07 v0.03 Tels 01:29 (first released version)
   - refined samples to be really generic
   - fixed bug: the last mail per archive was always dropped
   - graph's have now a minimum width to prevent cut-off texts
-2002-04-07 0.04 Tels
+2002-04-07 v0.04 Tels 05:30
   - /^From/ detection a bit more strict
-  - don't die, but warn and skip files that don't look like a mail-archives
+  - don't die, but warn and skip files that don't look like mail-archives
   - gather_mail: handle non-gziped mail-archives, too
   - gather_files: take all ordinary files (not just *.gz)
   - better doc
-2002-04-07 0.05 Tels
+2002-04-07 v0.05 Tels 16:43
   - draw values for yearly, and per domain stats
   - draw light-gray y grid
   - fixed width for bars for domain/yearly stats
@@ -44,7 +44,18 @@
   - fixed pod =hea1 NAME
   - added 'hour' stats
   - can filter out target domains and/or addresses (these appear as unknown)
-2002-04-08 0.06 Tels
+2002-04-08 v0.06 Tels 00:05 (damn, nearly four releases in one day ;)
   - prediction for current year/month (thanx Bill Kearney)
   - the prediction code made necc. a different algorithmn for determining the
     maximum value, this also fixed the dailys stats, which were too spacy
+2002-04-08 v0.07 Tels (never released)
+  - fixed CREDITS file
+  - fixed history (speling, times)
+  - removed some debug prints
+2002-04-27 v0.08 Tels
+  - added graph: last x days (w/ rolling average for 7 days) 
+  - added stats for compressed/uncompressed archive size
+  - tests for _average function (testsuite still highly incomplete)
+  - option 'average' (for average over Y days) works now
+  - removed useless sorting of keys when doing average
+  - fixed sample template, and sample script to show new options

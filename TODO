@@ -1,8 +1,9 @@
 
-* make it possible to give a list of target addresses or domains that are
-  accepted, anything else is filtered out as unknown
 * make it possible to set the colors of the graphs from outside
-* consider drawing an y-axis at the right side, too, or at least gridlines
 * more tests
-* graphs with angled text at the bottom (like 45° since the email addresses or
-  filter rules are pretty long)
+* Needs patch(es) to GD::Graph:
+  - graphs with angled text at the bottom (like 45° since the email addresses or
+    filter rules are pretty long)
+* The sample script can not generate yearly/monthly stat. Bug in Mail::Graph,
+  or GD::Graph?
+* Bug: Sample does not generate last_x_days.

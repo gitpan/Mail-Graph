@@ -2,7 +2,7 @@
 
 # convert a mail-dir folder into mbox format archive
 
-my $dir = '~/Mail/spam/';
+my $dir = 'spam/';
 my $output = 'archive/spams_cnv.txt';
 
 opendir DIR , $dir or die "Cannot read dir $dir: $!";
@@ -38,6 +38,7 @@ foreach $file (@files)
     push @lines,$line;
     }
   close FILE;
+  unlink "$dir/$file";
   splice @lines, 1,1,"X-FILE: $file\n";
   unshift @lines, "\nFrom $from $date"; # insert proper FROM
   push @mail, @lines if @lines > 3;
