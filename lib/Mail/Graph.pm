@@ -22,7 +22,7 @@ use Time::HiRes;
 
 use vars qw/$VERSION/;
 
-$VERSION = '0.13';
+$VERSION = '0.14';
 
 BEGIN
   {
@@ -167,13 +167,8 @@ sub _process_mail
     $cur->{dow},$cur->{hour},$cur->{minute},$cur->{second},$cur->{offset})
    = $self->_parse_date($cur->{date});
 
-#    print "$date " ,
-#    join ('|',$day,$month,$year,$dow,$hour,$minute,$seconds,$offset),"\n"
-#     if !defined $month || $month eq '';
-
   if ((!defined $cur->{month}) || ($cur->{month} == 0))
     {
-    print $cur->{date},"\n";
     $cur->{invalid} = 'invalid_month';
     return $cur;
     }
@@ -195,7 +190,6 @@ sub _process_mail
   foreach my $line (@{$mail->{header}})
     {
     chomp($line);
-    print " $line\n";
     if ($line =~ /^$filter_rule/i)
       { 
       my $rule = lc($line); $rule =~ s/^[A-Za-z0-9:\s-]+//;
@@ -208,11 +202,9 @@ sub _process_mail
       }
     else
       {
-      print "$line !~ /^X-Spam-Status:/i\n";
       next if $line !~ /^X-Spam-Status:/i;
       $line =~ /, hits=([0-9.]+)/;
       $cur->{score} = $1 || 0;
-      print "Got score $cur->{score}\n";
       }
     }
   

@@ -139,3 +139,6 @@
   * output dir no longer gets a trailing slash (good for OS/2?) and we use
     File::Spec to construct output file names
   * better reasons for skipping mails (string vs. some number)
+2004-01-04 v0.14 Tels 112 tests
+  * forgot to remove debug output. Duh.
+
