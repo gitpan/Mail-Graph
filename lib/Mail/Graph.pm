@@ -21,7 +21,7 @@ use vars qw/@ISA $VERSION/;
 
 @ISA = qw/Exporter/;
 
-$VERSION = '0.03';
+$VERSION = '0.04';
 
 my ($month_table,$dow_table);
 
@@ -646,7 +646,7 @@ sub _gather_files
   my @ret = ();
   foreach my $file (@files)
     {
-    next unless $file =~ /\.gz$/;		# only gz ones
+    next unless -f "$dir/$file";		# only normal files
     push @ret, $file;	
     }
   @ret;
@@ -657,16 +657,34 @@ sub _gather_mails
   my ($self,$file,$id) = @_;
 
   # that is a bit inefficient, sucking in anything at a time...
-  my $doc = `zcat $self->{_options}->{input}$file`;
+  my $doc;
+  if ($file =~ /\.gz$/)
+    {
+    $doc = `zcat $self->{_options}->{input}$file`;
+    }
+  else
+    {
+    open FILE, "$self->{_options}->{input}$file"
+     or die ("Cannot read $self->{_options}->{input}$file: $!");
+    while (<FILE>)
+      {
+      $doc .= $_;
+      }
+    close FILE;
+    }
 
-  die ("$file doesn't look like an mail archive") if $doc !~ /^From /;
+  if ($doc !~ /^From .*\d+/)
+    {
+    warn ("$file doesn't look like an mail archive, skipping");
+    return ();
+    }
   my @lines = split /\n/,$doc;
 
   my $header = 0; my @body_lines = (); my @header_lines = ();
   my (@ret);
   foreach my $line (@lines)
     {
-    if ($line =~ /^From /)
+    if ($line =~ /^From .*\d+/)
       {
       $header = 1;
       if (@header_lines > 0)
@@ -738,6 +756,36 @@ This module parses mailbox files in either compressed or uncompressed form
 and then generates pretty statistics and graphs about them. Although at first
 developed to do spam statistics, it works just fine for normal mail.
 
+=head2 File Format
+
+The module reads in files in mbox format. These can be compressed by gzip,
+or just plain text. Since the module read in any files that are in one
+directory, it can also handle mail-dir style folders, e.g. a directory where
+each mail resides in an extra file.
+
+The file format is quite simple and looks like this:
+
+	From sample_foo@example.com  Tue Oct 27 18:38:52 1998
+	Received: from barfel by foo.example.com (8.9.1/8.6.12) 
+	From: forged_bar@example.com
+	X-Envelope-To: <sample_foo@example.com>
+	Date: Tue, 27 Oct 1998 09:52:14 +0100 (CET)
+	Message-Id: <199810270852.12345567@example.com>
+	To: <none@example.com>
+	Subject: Sorry...
+	X-Loop-Detect: 1
+	X-Spamblock: caught by rule dummy@
+
+	This is a sample spam
+
+Basically, an email header plus email body, separated by the C<From> lines.
+
+The following fields are examined to determine:
+
+	X-Envelope-To		the target address/domain
+	From address@domain	the sender
+	From date		the receiving date
+
 =head1 METHODS
 
 =head2 new()
@@ -783,6 +831,9 @@ Return an error message or undef for no error.
 None known so far.
 
 =head1 LICENSE
+
+This program is free software; you may redistribute it and/or modify it under
+the same terms as Perl itself.
 
 =head1 AUTHOR
 

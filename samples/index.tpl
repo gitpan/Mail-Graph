@@ -2,9 +2,7 @@
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
-<title>
-Example.com - spam statistics
-</title>
+<title>Example.com - spam statistics</title>
 <link rel="stylesheet" type="text/css" href="spam.css">
 </head>
 <body bgcolor="#ffffff">
@@ -70,6 +68,19 @@ This page is an attempt to visualize the spam amounts I get.
 </td></tr>
 
 </table>
+
+<p>
+Spams are skipped due to two reasons:
+</p>
+
+<ul>
+<li>Either they have a garbled <code>From</code> line, like an invalid date
+<li>or they are double-bounces, e.g. a bounce from the mailer-daemon to notify
+the sender of the alleged spam bounced again back with an error message.
+Most of the times the spammers use invalid or forged addresses, and usually
+the other side is quickly filled with all the bounces and complains, thus
+double-bounces occur frequently.
+</ul>
 
 <h2>Graphs</h2>
 <a name="graphs">

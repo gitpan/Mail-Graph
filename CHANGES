@@ -28,3 +28,9 @@
   - refined samples to be really generic
   - fixed bug in that the last read spam per archive was always missing
   - graph's have now a minimum width to prevent cut-off texts
+2002-04-07 0.04 Tels
+  - /^From/ detection a bit more strict
+  - don't die, but warn and skip files that don't look like a mail-archives
+  - gather_mail: handle non-gziped mail-archives, too
+  - gather_files: take all ordinary files (not just *.gz)
+  - better doc

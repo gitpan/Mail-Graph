@@ -6,4 +6,3 @@
 * more tests
 * graphs with angled text at the bottom (like 45° since the email addresses or
   filter rules are pretty long)
-* read in plain text files, not using zcat (for windows) 
