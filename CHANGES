@@ -24,9 +24,9 @@
   - renamed graphs: per_month => monthly, year => yearly
   - added the ability to supress generation of each graph
   - refined sample template
-2002-04-07 0.03 Tels
+2002-04-07 0.03 Tels (first released version)
   - refined samples to be really generic
-  - fixed bug in that the last read spam per archive was always missing
+  - fixed bug: the last mail per archive was always dropped
   - graph's have now a minimum width to prevent cut-off texts
 2002-04-07 0.04 Tels
   - /^From/ detection a bit more strict
@@ -34,3 +34,13 @@
   - gather_mail: handle non-gziped mail-archives, too
   - gather_files: take all ordinary files (not just *.gz)
   - better doc
+2002-04-07 0.05 Tels
+  - draw values for yearly, and per domain stats
+  - draw light-gray y grid
+  - fixed width for bars for domain/yearly stats
+  - 15% instead 5% on top if values are shown
+  - 25% instead 5% on top if values are shown and vertical
+  - count items in last 30 days and instert as last_30_days into template
+  - fixed pod =hea1 NAME
+  - added 'hour' stats
+  - can filter out target domains and/or addresses (these appear as unknown)

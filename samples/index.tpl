@@ -67,6 +67,12 @@ This page is an attempt to visualize the spam amounts I get.
 ##last_7_days##
 </td></tr>
 
+<tr><td class="left">
+##Items## in the last 30 days:
+</td><td class="right">
+##last_30_days##
+</td></tr>
+
 </table>
 
 <p>

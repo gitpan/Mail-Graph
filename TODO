@@ -1,7 +1,7 @@
 
-* make it possible to give a list of target addrss or domains that are
-  accepted, anything else is unknown
-* make it possible to set the colors of the graphs
+* make it possible to give a list of target addresses or domains that are
+  accepted, anything else is filtered out as unknown
+* make it possible to set the colors of the graphs from outside
 * consider drawing an y-axis at the right side, too, or at least gridlines
 * more tests
 * graphs with angled text at the bottom (like 45° since the email addresses or

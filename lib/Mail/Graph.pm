@@ -21,7 +21,7 @@ use vars qw/@ISA $VERSION/;
 
 @ISA = qw/Exporter/;
 
-$VERSION = '0.04';
+$VERSION = '0.05';
 
 my ($month_table,$dow_table);
 
@@ -48,6 +48,8 @@ sub _init
     height => 200,
     templates => 'index.tpl',
     no_title => 0,
+    filter_domains => [ ],
+    filter_target => [ ],
     generate => {
       month => 1,
       yearly => 1,
@@ -55,6 +57,7 @@ sub _init
       daily => 1,
       dow => 1,
       monthly => 1,
+      hour => 1,
       toplevel => 1,
       rule => 1,
       target => 1,
@@ -95,11 +98,14 @@ sub generate
   # for stats:
   my $stats = {};
   foreach my $k (
-   qw/toplevel date month dow day yearly monthly daily rule target domain/)
+   qw/toplevel date month dow day yearly monthly daily rule target domain
+      hour/)
     {
     $stats->{$k} = {};
     }
-  foreach my $k (qw/items_proccessed items_skipped last_7_days last_24_hours/)
+  foreach my $k (qw/
+    items_proccessed items_skipped last_30_days last_7_days last_24_hours
+    /)
     {
     $stats->{stats}->{$k} = 0;
     }
@@ -121,25 +127,25 @@ sub generate
 
       if ($mail->{header}->[0] =~  
   /^From [<]?(.+?\@)([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})[>]? (.*)/)
-        {
-        $email = $1.$2;
-        $domain = $2;
-        $toplevel = 'undef';
-        $date = $3 || 'undef';
-        }
+	{
+	$email = $1.$2;
+	$domain = $2;
+	$toplevel = 'undef';
+	$date = $3 || 'undef';
+	}
       else
-        {
-        $mail->{header}->[0] =~ /^From [<]?(.+?\@)([a-zA-Z0-9\-\.]+?)(\.[a-zA-Z]{2,4})[>]? (.*)/;
-        $a = $1 || 'undef';
-        $b = $2 || 'undef';
-        $c = $3 || 'undef';
-        $d = $4 || 'undef';
-        $email = $a.$b.$c;
-        $date = $d || 'undef';
-        $toplevel = lc($c);
-        $domain = $b.$c;
+	{
+	$mail->{header}->[0] =~ /^From [<]?(.+?\@)([a-zA-Z0-9\-\.]+?)(\.[a-zA-Z]{2,4})[>]? (.*)/;
+	$a = $1 || 'undef';
+	$b = $2 || 'undef';
+	$c = $3 || 'undef';
+	$d = $4 || 'undef';
+	$email = $a.$b.$c;
+	$date = $d || 'undef';
+	$toplevel = lc($c);
+	$domain = $b.$c;
 #        warn "huh $mail->{header}->[0]\n" if $a eq 'undef';
-        }
+	}
       $stats->{stats}->{items_skipped}++, next
        if $date eq 'undef';
       my ($day,$month,$year,$dow,$hour,$minute,$second,$offset)
@@ -157,22 +163,29 @@ sub generate
       my $target = '';
       # extract the target address
       foreach my $line (@{$mail->{header}})
-        {
-        if (($line =~ /^X-Envelope-To:/i) && ($target eq ''))
+	{
+	if (($line =~ /^X-Envelope-To:/i) && ($target eq ''))
 	  {
-          $target = $line; $target =~ s/^[A-Za-z-]+: //;
+	  $target = $line; $target =~ s/^[A-Za-z-]+: //;
 	  }
 #        if (($line =~ /^To:/i) && ($target eq ''))
 #	  {
 #          $target = $line; $target =~ s/^To: //i;
 #	  }
-        }
+	}
       $target = lc($target);			# normalize
       $target =~ s/^\".+?\"\s+//;		# throw away comment/name
       $target =~ s/[<>]//g; 
       $target = substr($target,0,64) if length($target) > 64;
 
-      $target = '' if $target =~ /bizarre-talk/i;
+      foreach my $dom (@{$self->{_options}->{filter_domains}})
+        {
+        $target = 'unknown' if $target =~ /\@.*$dom/i;
+        }
+      foreach my $dom (@{$self->{_options}->{filter_target}})
+        {
+        $target = 'unknown' if $target =~ /$dom/i;
+        }
 
       $domain = $target; $domain =~ /\@(.+)$/; $domain = $1 || 'unknown';
       $domain = 'unknown' if $target eq '';
@@ -184,14 +197,18 @@ sub generate
       # include check for valid target domain
 
       my ($D_y,$D_m,$D_d, $Dh,$Dm,$Ds) =
-        Delta_YMDHMS($year,$month,$day, $hour,$minute,$second, @$now);
+	Delta_YMDHMS($year,$month,$day, $hour,$minute,$second, @$now);
 
       $stats->{stats}->{last_24_hours}++
        if ($D_y == 0 && $D_m == 0 && $D_d == 0 && $Dh < 24);
       $stats->{stats}->{last_7_days}++
        if Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]) <= 7;
+      $stats->{stats}->{last_30_days}++
+       if Delta_Days($year,$month,$day,$now->[0],$now->[1],$now->[2]) <= 30;
+
       $year += 1900 if $year < 100;
       $stats->{month}->{$year}->[$month-1]++;
+      $stats->{hour}->{$year}->[$hour]++ if $hour >= 0 && $hour <= 23;
       $stats->{dow}->{$year}->[$dow-1]++;
       $stats->{day}->{$year}->[$day-1]++;
       $stats->{yearly}->{$year}++;
@@ -200,14 +217,14 @@ sub generate
    
       # extract the filter rule that matched
       foreach my $line (@{$mail->{header}})
-        {
-        next if $line !~ /^X-Spamblock:/i; 
-        my $rule = $line; $rule =~ s/^X-Spamblock: //i;
-        $rule =~ s/^caught //;
-        $rule =~ s/^by //;
-        $rule =~ s/^rule //;
-        $stats->{rule}->{$rule}++;
-        }
+	{
+	next if $line !~ /^X-Spamblock:/i; 
+	my $rule = $line; $rule =~ s/^X-Spamblock: //i;
+	$rule =~ s/^caught //;
+	$rule =~ s/^by //;
+	$rule =~ s/^rule //;
+	$stats->{rule}->{$rule}++;
+	}
  
 #     if ($toplevel) !~ /^\.[a-z]+$/;
 #      $stats->{email}->{$email}++;
@@ -217,8 +234,8 @@ sub generate
       }
     }
 
-#  use Data::Dumper;
-#  print Dumper($stats->{domain});
+  #  use Data::Dumper;
+  #  print Dumper($stats->{domain});
 
   my $what = $self->{_options}->{items};
   my $h = $self->{_options}->{height};
@@ -230,6 +247,8 @@ sub generate
     x_label => 'top-level domain',
     y_number_format => '%i',
     bar_spacing     => 3,
+    show_values		=> 1,
+    values_vertical	=> 1,
     });
 
   $self->_graph ($stats,'month', 400, $h, {
@@ -241,6 +260,16 @@ sub generate
     cumulate => 1, 
     },
     \&_num_to_month,
+    );
+
+  $self->_graph ($stats,'hour', 800, $h, {
+    title => "$what/hour",
+    x_label => 'hour',
+    y_number_format => '%i',
+    x_labels_vertical => 0,
+    bar_spacing     => 6,
+    cumulate => 1, 
+    },
     );
 
   $self->_graph ($stats,'dow', 300, $h, {
@@ -263,12 +292,13 @@ sub generate
     );
 
   # adjust the width of the yearly stat, so that it doesn't look to broad
-  $w = (scalar keys %{$stats->{yearly}}) * 60; $w = 600 if $w > 600;
+  $w = (scalar keys %{$stats->{yearly}}) * 50; $w = 600 if $w > 600;
   $self->_graph ($stats,'yearly', $w, $h, {
     title => "$what/year",
-    x_label => 'year',
-    x_labels_vertical => 0,
-    bar_spacing     => 8,
+    x_label		=> 'year',
+    x_labels_vertical	=> 0,
+    bar_spacing		=> 8,
+    show_values		=> 1,
     },
     );
 
@@ -291,6 +321,8 @@ sub generate
     x_label => 'rule',
     x_labels_vertical => 1,
     bar_spacing     => 2,
+    show_values		=> 1,
+    values_vertical	=> 1,
     },
     );
   
@@ -302,17 +334,21 @@ sub generate
     x_label => 'target address',
     x_labels_vertical => 1,
     bar_spacing     => 2,
+    show_values		=> 1,
+    values_vertical	=> 1,
     },
     );
   
   # adjust the width of the domain stat, so that it doesn't look to broad
-  $w = (scalar keys %{$stats->{domain}}) * 30; $w = 800 if $w > 800;
+  $w = (scalar keys %{$stats->{domain}}) * 50; $w = 800 if $w > 800;
   # need more height for long domain names
   $self->_graph ($stats, 'domain', $w, $h + 100, {
     title => "$what/domain",
     x_label => 'target domain',
     x_labels_vertical => 1,
     bar_spacing     => 4,
+    show_values		=> 1,
+    long_ticks	=> 0,
     },
     );
   
@@ -370,7 +406,9 @@ sub _fill_template
   $tpl =~ s/##Items##/ucfirst($self->{_options}->{items})/eg;
   $tpl =~ s/##ITEMS##/uc($self->{_options}->{items})/eg;
   
-  foreach (qw/ items_processed items_skipped last_7_days last_24_hours/)
+  foreach (qw/
+     items_processed items_skipped last_7_days last_30_days last_24_hours
+    /)
     {
     $tpl =~ s/##$_##/$stats->{stats}->{$_}/g;
     }
@@ -559,13 +597,18 @@ sub _graph
     } 
   my $data = GD::Graph::Data->new([$k, @data]) or die GD::Graph::Data->error;
 
-  if (int($max * 1.05) == $max)	# increase by at least 1
+  my $grow = 1.05;
+  $grow = 1.15 if defined $options->{show_values};
+  $grow = 1.25 if defined $options->{values_vertical};
+  $grow = 1.15 if defined $options->{values_vertical} &&
+   $options->{x_label} eq 'target address';
+  if (int($max * $grow) == $max)	# increase by at least 1
     {
     $max++;
     }
   else
     {
-    $max = int($max*1.05);
+    $max = int($max*$grow);	# + x percent
     }
   my $defaults = {
     x_label	=> $self->{_options}->{items},
@@ -577,6 +620,9 @@ sub _graph
     y_number_format	=> '%i',
     x_labels_vertical	=> 1,
     transparent		=> 1,
+#    gridclr		=> 'lgray',
+    y_long_ticks  	=> 2,	
+    values_space	=> 6,
    };
   my @opt = ();
   foreach my $k (keys %$options, keys %$defaults)
@@ -739,6 +785,8 @@ __END__
 =pod
 
 =head1 NAME
+
+Mail::Graph - draw graphical stats for mails/spams
 
 =head1 SYNOPSIS
 
