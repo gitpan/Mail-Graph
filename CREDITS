@@ -46,5 +46,3 @@
   - can filter out target domains and/or addresses (these appear as unknown)
 2002-04-08 0.06 Tels
   - prediction for current year/month (thanx Bill Kearney)
-  - the prediction code made necc. a different algorithmn for determining the
-    maximum value, this also fixed the dailys stats, which were too spacy

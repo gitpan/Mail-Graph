@@ -12,7 +12,7 @@ use GD::Graph::colour;
 use GD::Graph::Data;
 use GD::Graph::Error;
 use Date::Calc 
-  qw/Delta_Days Date_to_Days Day_of_Week Today_and_Now check_date
+  qw/Delta_Days Date_to_Days Today_and_Now Today check_date
      Delta_YMDHMS Add_Delta_Days
     /;
 use Exporter;
@@ -21,7 +21,7 @@ use vars qw/@ISA $VERSION/;
 
 @ISA = qw/Exporter/;
 
-$VERSION = '0.05';
+$VERSION = '0.06';
 
 my ($month_table,$dow_table);
 
@@ -245,7 +245,6 @@ sub generate
   $self->_graph ($stats,'toplevel', $w, $h, {
     title => "$what/top-level domain",
     x_label => 'top-level domain',
-    y_number_format => '%i',
     bar_spacing     => 3,
     show_values		=> 1,
     values_vertical	=> 1,
@@ -254,7 +253,6 @@ sub generate
   $self->_graph ($stats,'month', 400, $h, {
     title => "$what/month",
     x_label => 'month',
-    y_number_format => '%i',
     x_labels_vertical => 0,
     bar_spacing     => 6,
     cumulate => 1, 
@@ -265,7 +263,6 @@ sub generate
   $self->_graph ($stats,'hour', 800, $h, {
     title => "$what/hour",
     x_label => 'hour',
-    y_number_format => '%i',
     x_labels_vertical => 0,
     bar_spacing     => 6,
     cumulate => 1, 
@@ -300,6 +297,8 @@ sub generate
     bar_spacing		=> 8,
     show_values		=> 1,
     },
+    undef,
+    1,							# do prediction
     );
 
   # adjust the width of the monthly stat, so that it doesn't look to broad
@@ -311,6 +310,7 @@ sub generate
     bar_spacing     => 2,
     },
     \&_year_month_to_num,
+    1,							# do prediction
     );
   
   # adjust the width of the rule stat, so that it doesn't look to broad
@@ -380,7 +380,6 @@ sub generate
     type	=> 'lines',
     },
     \&_year_month_day_to_num,
-    $avrg,
     );
   $self->_fill_template($stats);
   }
@@ -514,7 +513,7 @@ sub _parse_date
 
 sub _graph
   {
-  my ($self,$stats,$stat,$w,$h,$options,$map,$avrg) = @_;
+  my ($self,$stats,$stat,$w,$h,$options,$map,$predict) = @_;
 
   return if $self->{_options}->{generate}->{$stat} == 0;	# skip this
 
@@ -582,19 +581,45 @@ sub _graph
       }
     push @data, $v;
     }
-  my @sum;
-  foreach my $r ( @data )
+  if ($predict)
     {
-    my $i = 0;
-    foreach my $h ( @$r )
+    my $t = 1;		# month
+    $t = 0 if $stat eq 'yearly';
+    unshift @data, $self->_prediction( $stats, $t, scalar @{$data[0]} );
+    $t = $stat; $t =~ s/ly//;
+    # legend only if we did prediction
+    push @legend, "prediction for this $t" if defined $data[0]->[-1];
+    $options->{overwrite} = 1;
+    }
+  # calculate maximum value
+  my @sum;
+  if (defined $options->{cumulate})
+    {
+    foreach my $r ( @data )
       {
-      $sum[$i++] += $h;
+      my $i = 0;
+      foreach my $h ( @$r )
+        {
+        $sum[$i++] += $h || 0;
+        }
+      }
+    }
+  else
+    {
+    foreach my $r ( @data )
+      {
+      my $i = 0;
+      foreach my $h ( @$r )
+        {
+        $sum[$i] = $h if ($h || 0) >= ($sum[$i] || 0); $i++;
+        }
       }
     }
   foreach my $r ( @sum )
     {
     $max = $r if $r > $max;
-    } 
+    }
+ 
   my $data = GD::Graph::Data->new([$k, @data]) or die GD::Graph::Data->error;
 
   my $grow = 1.05;
@@ -620,7 +645,7 @@ sub _graph
     y_number_format	=> '%i',
     x_labels_vertical	=> 1,
     transparent		=> 1,
-#    gridclr		=> 'lgray',
+#    gridclr		=> 'lgray',	# to be compatible w/ old GD::Graph
     y_long_ticks  	=> 2,	
     values_space	=> 6,
    };
@@ -649,10 +674,17 @@ sub _graph
     else
       {
       $my_graph = GD::Graph::bars->new( $w, $h );
-      $my_graph->set( dclrs =>
-        [ '#ff2060','#60ff80','#6080ff','#ffff00','#f060f0','#d0a040', ] );
+      if ($predict)
+        {
+        $my_graph->set( dclrs => [ '#e0d0d0', '#ff2060' ] ); 
+        }
+      else
+        {
+        $my_graph->set( dclrs =>
+          [ '#ff2060','#60ff80','#6080ff','#ffff00','#f060f0','#d0a040', ] );
   #      [ '#f00020','#4000e0','#d00080','#a000c0','#b000b0','#a000c0', ] );
   #      [ '#f0f090','#e0e080','#d0d070','#c0c060','#b0b050','#a0a040' ] );
+        }
       }
     $my_graph->set_legend(@legend) if @legend != 0;
   
@@ -678,6 +710,53 @@ sub _graph
       }
     }
   return $self;
+  }
+
+sub _prediction
+  {
+  # from item count per day calculate an average for the given timeframe,
+  # then interpolate how many items will occur this month/year
+  my ($self, $stats, $m, $needed_samples ) = @_;
+
+  my $max = undef;
+  my $now = [ Today() ];
+  my ($month,$year) = ($now->[1],$now->[0]);
+  my $day = 1; my $days;
+  if ($m == 1)
+    {
+    # good enough?
+    $days = 28 if $month == 2;
+    $days = 30 if $month != 2;
+    $days = 31 if $now->[2] == 31;
+    }
+  else
+    {
+    $month = 1;
+    $days = 365;	# good enough?
+    }
+  my $delta = Delta_Days($year,$month,$day, @$now);
+  print "need $needed_samples $year-$month-$day delta $delta\n";
+  # sum up all items for each day since start of timeframe
+  my $sum = 0;
+  for (my $i = 0; $i < $delta; $i++)
+    {
+    $sum += $stats->{daily}->{"$day/$month/$year"} || 0;
+    print "$year-$month-$day $sum\n";
+    ($year,$month,$day) = Add_Delta_Days($year,$month,$day, 1);
+    }
+  if ($delta != 0)
+    {
+    print "predict $sum / $delta => ",$sum/$delta," per day = "; 
+    $max = int($days * $sum / $delta);
+    print "$max\n";
+    }
+  my @samples;
+  for (my $i = 1; $i < $needed_samples; $i++)
+    {
+    push @samples, undef;
+    }
+  push @samples, $max;
+  \@samples;
   }
 
 sub _gather_files

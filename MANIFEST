@@ -2,6 +2,7 @@ MANIFEST
 README
 LICENSE
 CHANGES
+CREDITS
 TODO
 Makefile.PL
 lib/Mail/Graph.pm
